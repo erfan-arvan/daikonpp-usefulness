@@ -23,6 +23,40 @@ def capture(cmd, cwd=None, env=None, timeout=300):
     return subprocess.check_output(cmd, cwd=cwd, env=env, text=True, timeout=timeout)
 
 
+def _ensure_svn_stub() -> Path:
+    """Ensures a minimal `svn` stub exists and returns its directory.
+
+    defects4j's own Utils::print_env (invoked at the start of every
+    `defects4j` command whenever D4J_DEBUG is set -- which this pipeline
+    requires globally, to capture real build/test logs) does:
+    `print_entry("SVN version", \\`svn --version --quiet\\`)`.
+
+    When svn isn't installed at all, Perl's backtick call in LIST context
+    (this is a function-call argument, hence list context) returns an EMPTY
+    LIST when there is no stdout to capture -- not an empty string -- so
+    print_entry receives only 1 argument instead of 2, and its own
+    `@_ >= 2 || die "Invalid number of arguments!"` check crashes. This
+    happens for EVERY project's every defects4j command on a host with no
+    svn, including git-based ones (confirmed against Cli, which uses
+    Vcs::Git) -- it is not specific to svn-based projects like Chart.
+
+    A one-line stub that prints anything and exits 0 is enough to keep this
+    diagnostic version check from crashing; it provides no real svn
+    functionality, so it does NOT make svn-based projects (Chart) actually
+    checkoutable -- exclude those from bugs.csv instead.
+    """
+    stub_dir = Path(__file__).resolve().parent / ".svn-stub"
+    stub_dir.mkdir(exist_ok=True)
+    stub = stub_dir / "svn"
+    if not stub.exists():
+        stub.write_text(
+            "#!/bin/sh\n"
+            "echo 'svn, version 1.14.1 (stub -- real svn not installed on this host)'\n"
+        )
+        stub.chmod(0o755)
+    return stub_dir
+
+
 def d4j_env(base_env: dict | None = None) -> dict:
     """Returns an environment dict for running `defects4j` subcommands.
 
@@ -38,6 +72,8 @@ def d4j_env(base_env: dict | None = None) -> dict:
     calls elsewhere in the same script. If unset, defects4j runs under
     whatever JDK is already on PATH -- fine for projects that tolerate a
     newer JDK, but not guaranteed for all of them.
+
+    Also prepends a stub `svn` to PATH -- see _ensure_svn_stub().
     """
     import os
 
@@ -46,6 +82,7 @@ def d4j_env(base_env: dict | None = None) -> dict:
     if d4j_home:
         env["JAVA_HOME"] = d4j_home
         env["PATH"] = f"{d4j_home}/bin:" + env.get("PATH", "")
+    env["PATH"] = f"{_ensure_svn_stub()}:" + env.get("PATH", "")
     return env
 
 
