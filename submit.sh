@@ -51,6 +51,12 @@ if [[ -n "${SLURM_ARRAY_TASK_ID:-}" ]]; then
   if [[ ! -d "$DPP_DIR" ]]; then
     echo ">>> Cloning a private daikonplusplus copy for this array task -> $DPP_DIR"
     git clone "$CANONICAL_DPP_DIR" "$DPP_DIR"
+    # Some HPC filesystems (this /mmfs1-backed one included -- see setup.sh's
+    # own fix_exec_bits comment) don't reliably preserve the executable bit
+    # on a fresh checkout, so gradlew can land non-executable even though
+    # git's index says 100755. build_daikonpp() invokes ./gradlew directly
+    # with no retry/repair, so fix it explicitly right after cloning.
+    chmod +x "$DPP_DIR/gradlew"
   fi
 fi
 
