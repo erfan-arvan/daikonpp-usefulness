@@ -16,6 +16,16 @@ set -euo pipefail
 module load Java/23.0.2
 echo "JAVA: $(which java)"
 
+# `git clone`/`init` probes this /mmfs1-backed filesystem for executable-bit
+# reliability and writes its own `filemode = true` into EACH new repo's
+# LOCAL .git/config, overriding a global `core.fileMode false` -- see
+# submit.sh for the full diagnosis (confirmed directly on a fresh
+# commons-collections clone). defects4j's own internal `git clone && git
+# checkout` hits this too, so set it here the same way.
+export GIT_CONFIG_COUNT=1
+export GIT_CONFIG_KEY_0=core.fileMode
+export GIT_CONFIG_VALUE_0=false
+
 export ROOT="$PWD"
 
 # If setup.sh built things for you, source its env file (DAIKON_JAR,

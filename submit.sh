@@ -23,6 +23,22 @@ echo "MVN: $(which mvn)"
 
 export ACCOUNT="mjk76"
 
+# `git clone`/`init` probes this /mmfs1-backed filesystem for executable-bit
+# reliability and writes its own `filemode = true` into EACH new repo's
+# LOCAL .git/config -- this happens for every repo defects4j clones
+# internally (its own `git clone && git checkout` inside d4j-checkout), and
+# local config always overrides a global `core.fileMode false` (confirmed
+# directly: a fresh clone of commons-collections showed a pure exec-bit
+# diff on one file, which blocked `defects4j checkout` from switching to
+# the target bug commit -- "local changes would be overwritten"). The
+# GIT_CONFIG_COUNT/KEY/VALUE env vars are git's documented mechanism for
+# overrides that outrank even local repo config, and being env vars they
+# propagate into every subprocess this script and Python spawn, including
+# defects4j's own internal git calls we don't otherwise control.
+export GIT_CONFIG_COUNT=1
+export GIT_CONFIG_KEY_0=core.fileMode
+export GIT_CONFIG_VALUE_0=false
+
 # Key file: a plain-text file containing just the key (no "export ...", no
 # quotes) at /project/mjk76/ea442/OPENAI_API_KEY.txt. Adjust the path below
 # if you move it. `xargs` trims any surrounding whitespace/newline.
