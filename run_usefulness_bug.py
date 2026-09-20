@@ -271,6 +271,17 @@ def phase(
     # if these are left unset).
     env["DP_PROMPT_STRATEGY"] = "fewshot"
     env["DP_CONTEXTS"] = "METHOD_BODY,SCOPE,CLASS_DOC"
+    # DpConfig defaults DP_LLM_TOTAL_TIMEOUT_SEC to 180s and
+    # DP_LLM_REQ_TIMEOUT_SEC to 45s if left unset -- far too small for a
+    # whole file's worth of program points. Confirmed directly on Lang-65:
+    # only 2316 of 3776 LLM tasks completed before the 180s total budget
+    # ran out ("LLM phase timed out; proceeding with completed tasks"),
+    # and the buggy method (DateUtils.truncate/modify) was among those
+    # that never got queried at all -- zero candidates were ever proposed
+    # for it, which is the root cause of RQ5 showing no catch for that
+    # bug. Match the same values the working promptstudy scripts use.
+    env["DP_LLM_TOTAL_TIMEOUT_SEC"] = "14400"
+    env["DP_LLM_REQ_TIMEOUT_SEC"] = "30"
     env["DP_REGISTRY"] = str(out_dir / f"daikonpp_registry_{label}.jsonl")
     env["DP_OUTCOMES"] = str(out_dir / f"daikonpp_outcomes_{label}.jsonl")
     env["DP_REGISTRY_RESET"] = "true"
