@@ -131,7 +131,13 @@ echo ">>> Built: $DPP_JAR"
 # 3. Defects4J (cloned + initialized, under BUILD_ROOT)
 ########################################
 D4J_DIR="$BUILD_ROOT/defects4j_install"
-if [[ -x "$D4J_DIR/framework/bin/defects4j" ]] && [[ -d "$D4J_DIR/project_repos" ]]; then
+# NOTE: project_repos/ exists in a bare `git clone` of Defects4J itself (it's
+# where get_repos.sh lives) -- its presence does NOT mean init.sh has ever
+# run. Use our own marker, written only after init.sh actually succeeds
+# below, so a run that failed partway (e.g. cpanm missing) is correctly
+# retried instead of being reported as "already initialized".
+D4J_INIT_MARKER="$D4J_DIR/.usefulness_init_done"
+if [[ -x "$D4J_DIR/framework/bin/defects4j" ]] && [[ -f "$D4J_INIT_MARKER" ]]; then
   echo ">>> Defects4J already initialized at $D4J_DIR, skipping"
 else
   echo ">>> Cloning Defects4J from $DEFECTS4J_GIT_URL (into $BUILD_ROOT)"
@@ -161,6 +167,7 @@ else
   echo ">>> Running Defects4J's init.sh (downloads project repos + Major + test-gen libs — large, can take a while)"
   export PERL5LIB="$D4J_DIR/.perl5/lib/perl5:${PERL5LIB:-}"
   run_with_execfix_retry "$D4J_DIR" ./init.sh
+  touch "$D4J_INIT_MARKER"
   echo ">>> Defects4J initialized at $D4J_DIR"
 fi
 
