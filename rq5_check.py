@@ -23,12 +23,16 @@ in progress; never trust those numbers as final (see RunIncompleteError).
 from __future__ import annotations
 
 import json
+import os
+import re
+import subprocess
 import sys
 from pathlib import Path
 
 
 class RunIncompleteError(Exception):
-    """Raised when bug_dir has no RUN_COMPLETE marker yet.
+    """Raised when bug_dir has no RUN_COMPLETE marker and SLURM can't
+    independently confirm the run is done either.
 
     out_dir is reused across re-runs of the same bug -- run_usefulness_bug.py
     never clears its old registry/outcomes/log files before starting a fresh
@@ -37,10 +41,87 @@ class RunIncompleteError(Exception):
     of the previous run's data and a handful of freshly-appended records
     from the new attempt in progress -- confirmed directly on Lang-65, where
     this produced a clean "0 true catches" result while a brand new
-    checkout/compile for that same bug was already under way. Only trust a
-    bug_dir once run_usefulness_bug.py has written RUN_COMPLETE, which it
-    does last, after both phases and its own RQ5 write have finished.
+    checkout/compile for that same bug was already under way.
     """
+
+
+def _bugs_csv_row_index(bugs_csv: Path, project: str, bug_id: str) -> int | None:
+    with open(bugs_csv) as f:
+        rows = [line.strip().split(",") for line in f if line.strip()]
+    for i, row in enumerate(rows[1:]):  # skip header
+        if len(row) >= 2 and row[0] == project and row[1] == bug_id:
+            return i
+    return None
+
+
+def _slurm_task_done(bug_dir: Path) -> bool | None:
+    """Asks SLURM directly whether this bug's array task last finished
+    COMPLETED and isn't currently running again, instead of trusting the
+    RUN_COMPLETE marker (which only exists for runs launched after that
+    marker was added) or the mtimes/contents of files that a still-running
+    or requeued task can be actively overwriting in place.
+
+    Returns True/False, or None if this can't be determined (not on a
+    SLURM node, sacct/squeue missing, bugs.csv not found, or no matching
+    accounting record -- e.g. it aged out of sacct's history).
+    """
+    m = re.match(r"^(.+)_(\S+)$", bug_dir.name)
+    if not m:
+        return None
+    project, bug_id = m.group(1), m.group(2)
+
+    bugs_csv = bug_dir.parent.parent / "bugs.csv"
+    if not bugs_csv.is_file():
+        bugs_csv = Path("bugs.csv")
+    if not bugs_csv.is_file():
+        return None
+    idx = _bugs_csv_row_index(bugs_csv, project, bug_id)
+    if idx is None:
+        return None
+
+    user = os.environ.get("USER") or os.environ.get("LOGNAME")
+    if not user:
+        return None
+    try:
+        squeue_out = subprocess.run(
+            ["squeue", "-u", user, "-h", "-o", "%i", "--name=usefulness"],
+            capture_output=True, text=True, timeout=30,
+        ).stdout
+        sacct_out = subprocess.run(
+            ["sacct", "--name=usefulness", "--format=JobID,State", "-X", "-n", "-P"],
+            capture_output=True, text=True, timeout=30,
+        ).stdout
+    except (OSError, subprocess.SubprocessError):
+        return None
+
+    # A currently-queued/running task for this exact array index (any job
+    # id) means a fresh attempt is in flight right now, whatever sacct's
+    # history says about an earlier attempt.
+    running_indices = {line.split("_")[-1] for line in squeue_out.splitlines() if "_" in line}
+    if str(idx) in running_indices:
+        return False
+
+    # Among sacct's history for this array index, only the most recently
+    # submitted job (highest numeric job id) reflects the CURRENT contents
+    # of out_dir -- an old COMPLETED record from a since-superseded
+    # submission would otherwise look identical to a real completion.
+    best_job_num = -1
+    best_state = None
+    for line in sacct_out.splitlines():
+        parts = line.split("|")
+        if len(parts) != 2:
+            continue
+        jobid, state = parts
+        jm = re.match(r"^(\d+)_(\d+)$", jobid)
+        if not jm or jm.group(2) != str(idx):
+            continue
+        job_num = int(jm.group(1))
+        if job_num > best_job_num:
+            best_job_num = job_num
+            best_state = state
+    if best_state is None:
+        return None
+    return best_state == "COMPLETED"
 
 
 def _key(record: dict) -> str:
@@ -76,11 +157,29 @@ def compute_rq5(bug_dir: Path, require_complete: bool = True) -> dict:
 
     Raises FileNotFoundError if the four required jsonl files aren't there
     yet (e.g. called before Phase B has finished), and RunIncompleteError
-    if bug_dir has no RUN_COMPLETE marker (see RunIncompleteError) unless
+    if the run can't be confirmed done (see RunIncompleteError) unless
     require_complete=False.
+
+    "Confirmed done" is either the RUN_COMPLETE marker (written by runs
+    launched after that marker was added) or, when it's absent -- e.g. a
+    bug that finished before this check existed -- SLURM's own accounting
+    record for that bug's array task (see _slurm_task_done). Only when
+    NEITHER can confirm completion does this raise.
     """
     if require_complete and not (bug_dir / "RUN_COMPLETE").exists():
-        raise RunIncompleteError(f"{bug_dir}/RUN_COMPLETE not found")
+        slurm_done = _slurm_task_done(bug_dir)
+        if slurm_done is True:
+            # Confirmed independently via sacct/squeue -- backfill the
+            # marker so future calls take the fast path without re-asking
+            # SLURM every time.
+            (bug_dir / "RUN_COMPLETE").write_text("backfilled from sacct\n")
+        elif slurm_done is False:
+            raise RunIncompleteError(f"{bug_dir}: SLURM shows this bug's task is still running/requeued")
+        else:
+            raise RunIncompleteError(
+                f"{bug_dir}/RUN_COMPLETE not found and SLURM state couldn't be determined "
+                f"(pass --allow-incomplete to inspect anyway)"
+            )
 
     a = _load_verdicts(
         bug_dir / "daikonpp_registry_without_test.jsonl",
