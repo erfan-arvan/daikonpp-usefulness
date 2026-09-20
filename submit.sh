@@ -22,9 +22,14 @@ echo "JAVA: $(which java)"
 echo "MVN: $(which mvn)"
 
 export ACCOUNT="mjk76"
-# Prefer sourcing a protected key file over inlining it here, e.g.:
-#   source ~/.openai_key
-export OPENAI_API_KEY="${OPENAI_API_KEY:?set OPENAI_API_KEY before submitting}"
+
+# Key file: a plain-text file containing just the key (no "export ...", no
+# quotes) at /project/mjk76/ea442/OPENAI_API_KEY.txt. Adjust the path below
+# if you move it. `xargs` trims any surrounding whitespace/newline.
+OPENAI_KEY_FILE="/project/mjk76/ea442/OPENAI_API_KEY.txt"
+[[ -f "$OPENAI_KEY_FILE" ]] || { echo "ERROR: OpenAI key file not found: $OPENAI_KEY_FILE"; exit 1; }
+export OPENAI_API_KEY="$(xargs < "$OPENAI_KEY_FILE")"
+[[ -n "$OPENAI_API_KEY" ]] || { echo "ERROR: $OPENAI_KEY_FILE is empty"; exit 1; }
 
 export ROOT="$PWD"
 export DPP_DIR="$ROOT/daikonplusplus"
