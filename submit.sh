@@ -1,0 +1,57 @@
+#!/bin/bash -l
+#SBATCH --job-name=usefulness
+#SBATCH --output=%x.%j.out
+#SBATCH --error=%x.%j.err
+#SBATCH --partition=general
+#SBATCH --qos=standard
+#SBATCH --account=mjk76
+#SBATCH --nodes=1
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=8
+#SBATCH --time=2-00:00:00
+#SBATCH --mem=128G
+
+set -euo pipefail
+
+export MAVEN_HOME="/scratch/mjk76/$USER/apache-maven-3.9.9"
+export PATH="$MAVEN_HOME/bin:$PATH"
+
+module load Java/23.0.2
+
+echo "JAVA: $(which java)"
+echo "MVN: $(which mvn)"
+
+export ACCOUNT="mjk76"
+# Prefer sourcing a protected key file over inlining it here, e.g.:
+#   source ~/.openai_key
+export OPENAI_API_KEY="${OPENAI_API_KEY:?set OPENAI_API_KEY before submitting}"
+
+export ROOT="$PWD"
+export DPP_DIR="$ROOT/daikonplusplus"
+
+# If setup.sh built things for you, source its env file (defects4j on PATH,
+# etc.) instead of relying on this job's own module loads / PATH:
+[[ -f "$ROOT/usefulness_env.sh" ]] && source "$ROOT/usefulness_env.sh"
+
+# Defects4J's own docs say v2.x needs Java 8, which may not be the JDK you
+# module-loaded above for daikonplusplus. If so, uncomment and point this at
+# a Java 8 install; leave unset if one JDK works for both on your cluster.
+# export D4J_JAVA_HOME=/path/to/jdk8
+
+# defects4j must be on PATH (its own installer adds a shell profile line;
+# source it here if sbatch doesn't inherit your interactive shell config)
+command -v defects4j >/dev/null || { echo "ERROR: defects4j not on PATH"; exit 1; }
+
+# One bug per array task (recommended): edit --array below to match the
+# number of rows in bugs.csv (0-indexed, inclusive), e.g. --array=0-99
+BUGS_CSV="$ROOT/bugs.csv"
+LINE_NO=$(( SLURM_ARRAY_TASK_ID + 2 ))  # +2: skip header, 1-index sed/awk
+ROW=$(awk -F, -v n="$LINE_NO" 'NR==n {print $1","$2}' "$BUGS_CSV")
+PROJECT="${ROW%%,*}"
+BUG_ID="${ROW##*,}"
+
+echo ">>> Running usefulness experiment for $PROJECT-$BUG_ID"
+python3 "$ROOT/run_usefulness_bug.py" "$PROJECT" "$BUG_ID"
+
+# --- Alternative: run the whole CSV sequentially in a single job (no array) ---
+# python3 "$ROOT/run_usefulness_batch.py" "$ROOT/bugs.csv" --skip-existing
