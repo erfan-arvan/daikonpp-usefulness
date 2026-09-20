@@ -44,6 +44,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -62,7 +63,31 @@ from lib_defects4j import (  # noqa: E402
 
 
 def build_daikonpp(dpp_dir: Path) -> Path:
-    run(["./gradlew", "-q", "clean", "shadowJar"], cwd=dpp_dir)
+    # build.gradle's Java toolchain reads DP_JAVA_VERSION (default 17 if
+    # unset -- see build.gradle's `toolchain { languageVersion = ... }`) and
+    # requires an ACTUAL JDK of that exact version to be locally installed;
+    # it does not just accept "17 or newer" already on PATH. This cluster
+    # has no JDK 17 install (only the module-loaded 23 and the private 11
+    # setup.sh provisions for Defects4J), so leaving DP_JAVA_VERSION unset
+    # makes Gradle fail with "Cannot find a Java installation ... matching
+    # this task's requirements: {languageVersion=17}". setup.sh works around
+    # this by detecting the ambient JDK and exporting DP_JAVA_VERSION to
+    # match it; do the same here for the identical `./gradlew shadowJar`
+    # call this script makes on its own.
+    env = os.environ.copy()
+    java_home = env.get("DPP_JAVA_HOME")
+    java_bin = f"{java_home}/bin/java" if java_home else "java"
+    try:
+        ver_out = subprocess.run(
+            [java_bin, "-version"], capture_output=True, text=True
+        ).stderr
+        m = re.search(r'"(\d+)', ver_out)
+        java_ver = m.group(1) if m else "17"
+    except (OSError, subprocess.SubprocessError):
+        java_ver = "17"
+    env.setdefault("DP_JAVA_VERSION", java_ver)
+
+    run(["./gradlew", "-q", "clean", "shadowJar"], cwd=dpp_dir, env=env)
     jar = dpp_dir / "build" / "libs" / "daikonplusplus.jar"
     if not jar.exists():
         raise SystemExit(f"ERROR: {jar} missing after build")
