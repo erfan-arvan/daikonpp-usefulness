@@ -40,11 +40,13 @@ echo "=================================================================="
 ########################################
 # Prereq checks
 ########################################
-for tool in git java javac make perl cpanm rsync curl unzip; do
+# cpanm is not required here: if missing, we bootstrap a private copy from
+# https://cpanmin.us below (no admin rights needed), so it's not checked here.
+for tool in git java javac make perl rsync curl unzip; do
   if ! command -v "$tool" >/dev/null 2>&1; then
     echo "WARNING: '$tool' not found on PATH."
     echo "  - git/java/javac/make/curl/unzip are required; the script will fail without them."
-    echo "  - perl/cpanm are required by Defects4J's own installer."
+    echo "  - perl is required by Defects4J's own installer."
     echo "  - rsync is required by Daikon's own Makefile (java/Makefile's daikon.jar target)."
     echo "    If your HPC doesn't have it and you can't install it, ask your admin to add it,"
     echo "    or 'module load rsync' if your site provides it as a module."
@@ -135,8 +137,27 @@ else
   echo ">>> Cloning Defects4J from $DEFECTS4J_GIT_URL (into $BUILD_ROOT)"
   [[ -d "$D4J_DIR" ]] || git clone "$DEFECTS4J_GIT_URL" "$D4J_DIR"
   fix_exec_bits "$D4J_DIR"
+
+  # cpanm may not be installed on this cluster at all (seen in practice: no
+  # system package, no module). Rather than require the user to get one
+  # installed, bootstrap a private copy of the standalone cpanm script into
+  # BUILD_ROOT -- this is the officially documented way to get cpanm with no
+  # admin rights (https://cpanmin.us), and it's just a Perl script, so it
+  # doesn't need its own exec bit trickery: it's invoked as `perl cpanm ...`.
+  CPANM="$BUILD_ROOT/cpanm"
+  if command -v cpanm >/dev/null 2>&1; then
+    CPANM="$(command -v cpanm)"
+    CPANM_CMD=("$CPANM")
+  else
+    if [[ ! -f "$CPANM" ]]; then
+      echo ">>> cpanm not found on PATH; bootstrapping a private copy into $BUILD_ROOT"
+      curl -fsSL https://cpanmin.us -o "$CPANM"
+    fi
+    CPANM_CMD=(perl "$CPANM")
+  fi
+
   echo ">>> Installing Defects4J's Perl dependencies (cpanm --installdeps .)"
-  (cd "$D4J_DIR" && cpanm --local-lib="$D4J_DIR/.perl5" --installdeps . )
+  (cd "$D4J_DIR" && "${CPANM_CMD[@]}" --local-lib="$D4J_DIR/.perl5" --installdeps . )
   echo ">>> Running Defects4J's init.sh (downloads project repos + Major + test-gen libs — large, can take a while)"
   export PERL5LIB="$D4J_DIR/.perl5/lib/perl5:${PERL5LIB:-}"
   run_with_execfix_retry "$D4J_DIR" ./init.sh
