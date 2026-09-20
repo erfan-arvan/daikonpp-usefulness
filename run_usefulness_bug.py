@@ -87,12 +87,12 @@ def build_daikonpp(dpp_dir: Path) -> Path:
         java_ver = "17"
     env.setdefault("DP_JAVA_VERSION", java_ver)
 
-    # -x test: this build's `shadowJar` depends on daikonplusplus's own unit
-    # test suite. We only need the jar to run Oca against Defects4J bugs, not
-    # to validate daikonplusplus itself -- a flaky/environment-sensitive unit
-    # test there (e.g. one that spawns a timing-sensitive subprocess) would
-    # otherwise block every single bug run in this pipeline.
-    run(["./gradlew", "-q", "clean", "shadowJar", "-x", "test"], cwd=dpp_dir, env=env)
+    # No `clean` here: `shadowJar` depends on `test`, and `clean` wipes
+    # Gradle's incremental-build cache, forcing `test` to actually re-run
+    # every single build instead of being skipped as UP-TO-DATE. Your own
+    # working run_prompt_study.sh builds with plain `./gradlew -q
+    # shadowJar` (no clean) for exactly this reason -- match that here.
+    run(["./gradlew", "-q", "shadowJar"], cwd=dpp_dir, env=env)
     jar = dpp_dir / "build" / "libs" / "daikonplusplus.jar"
     if not jar.exists():
         raise SystemExit(f"ERROR: {jar} missing after build")
