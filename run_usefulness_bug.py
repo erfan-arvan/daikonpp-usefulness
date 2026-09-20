@@ -393,6 +393,13 @@ def main():
     out_dir = Path(args.out) if args.out else root / "outputs_usefulness" / f"{args.project}_{args.bug_id}"
     out_dir.mkdir(parents=True, exist_ok=True)
 
+    # out_dir is reused across re-runs of the same bug (nothing clears its
+    # old registry/outcomes/log files), so if this is a re-run, remove the
+    # PREVIOUS run's completion marker now, before Phase A starts
+    # overwriting those files in place. Otherwise the marker would keep
+    # claiming "done" for the whole overwrite window based on the old run.
+    (out_dir / "RUN_COMPLETE").unlink(missing_ok=True)
+
     cassette_dir = out_dir / "cassettes"
     cassette_dir.mkdir(parents=True, exist_ok=True)
 
@@ -443,6 +450,19 @@ def main():
     print(format_summary(rq5_result))
     summary_path = write_summary(out_dir, rq5_result)
     print(f"[INFO] RQ5 summary -> {summary_path}")
+
+    # Written LAST, only once both phases and the RQ5 analysis have actually
+    # finished. rq5_check.py's --all mode refuses to report on a bug_dir
+    # missing this marker -- out_dir is reused across re-runs of the same
+    # bug (nothing clears it), so a bug currently being re-run overwrites
+    # its registry/outcomes files in place; a snapshot taken mid-overwrite
+    # can still parse as valid, complete-looking JSON even though it's a
+    # mix of the old finished run and a few freshly-appended records from
+    # the new one in progress. Confirmed directly on Lang-65: rq5_check.py
+    # reported a clean "0 true catches" result while defects4j checkout
+    # for the SAME bug's new attempt was already fresh in
+    # daikonpp_registry_without_test.jsonl.
+    (out_dir / "RUN_COMPLETE").write_text(f"{args.project}-{args.bug_id}\n")
 
 
 if __name__ == "__main__":
