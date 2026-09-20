@@ -58,6 +58,16 @@ if [[ -n "${SLURM_ARRAY_TASK_ID:-}" ]]; then
     # with no retry/repair, so fix it explicitly right after cloning.
     chmod +x "$DPP_DIR/gradlew"
   fi
+
+  # Gradle takes an exclusive lock on a journal file under GRADLE_USER_HOME
+  # (default ~/.gradle) for its build-cache bookkeeping. With no override,
+  # all array tasks share that one home directory and its one journal lock,
+  # so N concurrent `./gradlew` invocations serialize on it and time out
+  # waiting for each other -- confirmed directly: "Timeout waiting to lock
+  # journal cache (~/.gradle/caches/journal-1)". Giving each task its own
+  # GRADLE_USER_HOME removes the shared lock entirely.
+  export GRADLE_USER_HOME="${BUILD_ROOT:-$ROOT}/gradle-home-task-${SLURM_ARRAY_TASK_ID}"
+  mkdir -p "$GRADLE_USER_HOME"
 fi
 
 # Defects4J's own docs say v2.x needs Java 8, which may not be the JDK you
