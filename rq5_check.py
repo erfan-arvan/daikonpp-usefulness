@@ -120,7 +120,13 @@ def main():
     for bug_dir in bug_dirs:
         try:
             result = compute_rq5(bug_dir)
-        except FileNotFoundError as e:
+        except (FileNotFoundError, json.JSONDecodeError) as e:
+            # A still-running array task keeps appending to its
+            # daikonpp_registry_*.jsonl / daikonpp_outcomes_*.jsonl files,
+            # so reading them mid-write can catch a half-written last line
+            # (JSONDecodeError) in addition to a file that doesn't exist
+            # yet (FileNotFoundError). Either way, treat the bug as not
+            # ready yet rather than crashing the whole batch.
             print(f"{bug_dir}: SKIP ({e})")
             continue
         print(format_summary(result))
