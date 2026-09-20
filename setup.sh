@@ -155,12 +155,37 @@ elif [[ -x "$D4J_JDK_DIR/bin/java" ]]; then
   D4J_JAVA_HOME="$D4J_JDK_DIR"
 else
   echo ">>> No usable Java 11 found; downloading a private Temurin 11 into $D4J_JDK_DIR"
+  echo ">>> Disk usage on \$BUILD_ROOT before download:"
+  df -h "$BUILD_ROOT" || true
   mkdir -p "$D4J_JDK_DIR"
-  curl -fsSL "https://api.adoptium.net/v3/binary/latest/11/ga/linux/x64/jdk/hotspot/normal/eclipse?project=jdk" \
-    -o "$BUILD_ROOT/jdk11.tar.gz"
-  tar xzf "$BUILD_ROOT/jdk11.tar.gz" -C "$D4J_JDK_DIR" --strip-components=1
-  rm -f "$BUILD_ROOT/jdk11.tar.gz"
-  [[ -x "$D4J_JDK_DIR/bin/java" ]] || { echo "ERROR: JDK 11 download/extract did not produce a usable java"; exit 1; }
+  JDK_TARBALL="$BUILD_ROOT/jdk11.tar.gz"
+  if ! curl -fsSL "https://api.adoptium.net/v3/binary/latest/11/ga/linux/x64/jdk/hotspot/normal/eclipse?project=jdk" \
+      -o "$JDK_TARBALL"; then
+    echo "ERROR: curl failed to download the JDK 11 tarball (exit $?)"
+    exit 1
+  fi
+  echo ">>> Downloaded $(ls -la "$JDK_TARBALL" 2>&1)"
+  if ! tar xzf "$JDK_TARBALL" -C "$D4J_JDK_DIR" --strip-components=1; then
+    echo "ERROR: tar failed to extract the JDK 11 tarball into $D4J_JDK_DIR"
+    echo ">>> Disk usage on \$BUILD_ROOT at failure:"
+    df -h "$BUILD_ROOT" || true
+    exit 1
+  fi
+  rm -f "$JDK_TARBALL"
+  # Some HPC filesystems don't reliably preserve the executable bit through
+  # a tar extraction (the same issue fix_exec_bits works around for git
+  # checkouts elsewhere in this script) -- repair it explicitly here rather
+  # than assume the archive's permissions survived.
+  chmod -R u+rX "$D4J_JDK_DIR"
+  find "$D4J_JDK_DIR/bin" "$D4J_JDK_DIR/lib" -type f -exec chmod u+x {} \; 2>/dev/null || true
+  if [[ ! -x "$D4J_JDK_DIR/bin/java" ]]; then
+    echo "ERROR: JDK 11 download/extract did not produce a usable java at $D4J_JDK_DIR/bin/java"
+    echo ">>> Contents of $D4J_JDK_DIR:"
+    ls -la "$D4J_JDK_DIR" || true
+    echo ">>> Contents of $D4J_JDK_DIR/bin (if present):"
+    ls -la "$D4J_JDK_DIR/bin" 2>&1 || true
+    exit 1
+  fi
   D4J_JAVA_HOME="$D4J_JDK_DIR"
 fi
 "$D4J_JAVA_HOME/bin/java" -version
