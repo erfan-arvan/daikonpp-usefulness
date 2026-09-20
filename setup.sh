@@ -53,6 +53,16 @@ for tool in git java javac make perl rsync curl unzip; do
   fi
 done
 
+# Capture the ambient JDK (whatever `module load` set up before this script
+# ran) before it gets shadowed on PATH by the private Java 11 below -- this
+# is what daikonplusplus/Daikon should keep using (they need 17+), pinned
+# explicitly as DPP_JAVA_HOME so it doesn't matter what order things land on
+# PATH after sourcing usefulness_env.sh.
+ORIG_JAVA_HOME="${JAVA_HOME:-}"
+if [[ -z "$ORIG_JAVA_HOME" ]] && command -v java >/dev/null 2>&1; then
+  ORIG_JAVA_HOME="$(dirname "$(dirname "$(command -v java)")")"
+fi
+
 # A stray JAVA_TOOL_OPTIONS can corrupt `javac -version` parsing that several
 # of these build systems rely on (confirmed while developing this script: a
 # proxy-injected JAVA_TOOL_OPTIONS made `javac -version | head -1` pick up an
@@ -128,7 +138,36 @@ DPP_JAR="$DPP_DIR/build/libs/daikonplusplus.jar"
 echo ">>> Built: $DPP_JAR"
 
 ########################################
-# 3. Defects4J (cloned + initialized, under BUILD_ROOT)
+# 3. A private Java 11 for Defects4J
+########################################
+# Defects4J's own launcher (framework/core/Constants.pm) checks the major
+# version of `java` on PATH with an EXACT-match comparison -- `if ($1 != 11)
+# die`. Not "at least 11": exactly 11. Java 17/23 (or anything else) fails
+# this check outright, and on a cluster with no Java 11 module at all,
+# `module load` can't fix it. Rather than depend on the cluster providing
+# one, download a private Temurin 11 into BUILD_ROOT if D4J_JAVA_HOME isn't
+# already set to something usable.
+D4J_JDK_DIR="$BUILD_ROOT/jdk11"
+if [[ -n "${D4J_JAVA_HOME:-}" ]] && [[ -x "$D4J_JAVA_HOME/bin/java" ]]; then
+  echo ">>> Using existing D4J_JAVA_HOME=$D4J_JAVA_HOME for Defects4J"
+elif [[ -x "$D4J_JDK_DIR/bin/java" ]]; then
+  echo ">>> Private JDK 11 already present at $D4J_JDK_DIR"
+  D4J_JAVA_HOME="$D4J_JDK_DIR"
+else
+  echo ">>> No usable Java 11 found; downloading a private Temurin 11 into $D4J_JDK_DIR"
+  mkdir -p "$D4J_JDK_DIR"
+  curl -fsSL "https://api.adoptium.net/v3/binary/latest/11/ga/linux/x64/jdk/hotspot/normal/eclipse?project=jdk" \
+    -o "$BUILD_ROOT/jdk11.tar.gz"
+  tar xzf "$BUILD_ROOT/jdk11.tar.gz" -C "$D4J_JDK_DIR" --strip-components=1
+  rm -f "$BUILD_ROOT/jdk11.tar.gz"
+  [[ -x "$D4J_JDK_DIR/bin/java" ]] || { echo "ERROR: JDK 11 download/extract did not produce a usable java"; exit 1; }
+  D4J_JAVA_HOME="$D4J_JDK_DIR"
+fi
+"$D4J_JAVA_HOME/bin/java" -version
+export PATH="$D4J_JAVA_HOME/bin:$PATH"
+
+########################################
+# 4. Defects4J (cloned + initialized, under BUILD_ROOT)
 ########################################
 D4J_DIR="$BUILD_ROOT/defects4j_install"
 # NOTE: project_repos/ exists in a bare `git clone` of Defects4J itself (it's
@@ -167,8 +206,27 @@ else
   echo ">>> Running Defects4J's init.sh (downloads project repos + Major + test-gen libs — large, can take a while)"
   export PERL5LIB="$D4J_DIR/.perl5/lib/perl5:${PERL5LIB:-}"
   run_with_execfix_retry "$D4J_DIR" ./init.sh
+
+  # init.sh doesn't treat every failed download inside it (e.g. a
+  # get_repos.sh curl write error) as fatal to the script's own exit code,
+  # so its exit 0 alone isn't proof the project repos actually landed.
+  # Confirm Defects4J really works before marking it initialized.
+  echo ">>> Verifying Defects4J actually works (defects4j pids)"
+  PIDS_OUT="$("$D4J_DIR/framework/bin/defects4j" pids 2>&1)" || {
+    echo "ERROR: 'defects4j pids' failed after init.sh:"
+    echo "$PIDS_OUT"
+    exit 1
+  }
+  [[ -n "$PIDS_OUT" ]] || {
+    echo "ERROR: 'defects4j pids' returned no project IDs after init.sh --"
+    echo "the project-repos archive likely didn't fully download. Check disk"
+    echo "quota/usage on \$BUILD_ROOT and re-run setup.sh."
+    exit 1
+  }
+  echo "$PIDS_OUT"
+
   touch "$D4J_INIT_MARKER"
-  echo ">>> Defects4J initialized at $D4J_DIR"
+  echo ">>> Defects4J initialized and verified at $D4J_DIR"
 fi
 
 ########################################
@@ -182,13 +240,21 @@ export ROOT="$ROOT"
 export BUILD_ROOT="$BUILD_ROOT"
 export DPP_DIR="$DPP_DIR"
 export DAIKON_JAR="$DAIKON_JAR_DEST"
-export PATH="$D4J_DIR/framework/bin:\$PATH"
 export PERL5LIB="$D4J_DIR/.perl5/lib/perl5:\${PERL5LIB:-}"
-# If your cluster's default \`module load\` JDK is not new enough for
-# Defects4J (its own docs say v2.x wants Java 8) or not the one
-# daikonplusplus/Daikon need (17+), set these to pin each side separately:
-# export D4J_JAVA_HOME=/path/to/jdk8
-# export DPP_JAVA_HOME=/path/to/jdk17
+# Defects4J's own launcher hard-requires EXACTLY Java 11 (an exact-match
+# version check in its Constants.pm, not "at least"). This cluster has no
+# Java 11 module, so setup.sh downloaded a private Temurin 11. D4J_JAVA_HOME
+# is read directly by run_usefulness_bug.py / run_daikon_usefulness_bug.py
+# (lib_defects4j.d4j_env()) for every \`defects4j\` subprocess call they make.
+export D4J_JAVA_HOME="$D4J_JAVA_HOME"
+# DPP_JAVA_HOME pins the JDK daikonplusplus/Daikon build/run under (they need
+# 17+) independent of D4J_JAVA_HOME/PATH below, so it doesn't matter what
+# order things land on PATH after sourcing this file.
+export DPP_JAVA_HOME="$ORIG_JAVA_HOME"
+# Puts both defects4j itself AND the Java 11 it requires on PATH, so a plain
+# interactive \`defects4j pids\` works after sourcing this file, not just the
+# python scripts (which use D4J_JAVA_HOME directly and don't rely on PATH).
+export PATH="$D4J_DIR/framework/bin:$D4J_JAVA_HOME/bin:\$PATH"
 EOF
 
 echo "=================================================================="
