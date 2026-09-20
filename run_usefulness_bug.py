@@ -228,6 +228,12 @@ def phase(
     env["DP_DISABLE_REAL_LLM"] = "1" if disable_real_llm else "0"
     env["DP_LLM_CASSETTES"] = str(cassette_dir)
     env["DP_TEST_FILTER"] = "1"
+    # Oca config for this experiment: few-shot prompting, and context limited
+    # to method body + in-scope variables/types + enclosing class javadoc
+    # (DpConfig defaults to prompt strategy "baseline" and ALL 8 ContextKinds
+    # if these are left unset).
+    env["DP_PROMPT_STRATEGY"] = "fewshot"
+    env["DP_CONTEXTS"] = "METHOD_BODY,SCOPE,CLASS_DOC"
     env["DP_REGISTRY"] = str(out_dir / f"daikonpp_registry_{label}.jsonl")
     env["DP_OUTCOMES"] = str(out_dir / f"daikonpp_outcomes_{label}.jsonl")
     env["DP_REGISTRY_RESET"] = "true"
