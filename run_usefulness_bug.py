@@ -52,6 +52,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from lib_defects4j import (  # noqa: E402
+    _ensure_svn_stub,
     capture,
     d4j_env,
     disable_test_method,
@@ -252,6 +253,12 @@ def phase(
     if dpp_java_home:
         env["JAVA_HOME"] = dpp_java_home
         env["PATH"] = f"{dpp_java_home}/bin:" + env.get("PATH", "")
+    # daikonplusplus's own JVM (started with this `env`) shells out to
+    # `defects4j compile` mid-run via the compile/runner scripts it invokes
+    # (write_compile_script/write_runner below) -- those subprocesses
+    # inherit THIS env, not d4j_subprocess_env above, so they need the same
+    # svn stub d4j_env() adds, or they hit the identical Utils.pm crash.
+    env["PATH"] = f"{_ensure_svn_stub()}:" + env.get("PATH", "")
     env["D4J_ROOT"] = str(root / "defects4j")
     env["DP_WORKDIR"] = str(dp_workdir)
     env["DP_KEEP_WORK"] = "1"
