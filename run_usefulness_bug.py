@@ -61,6 +61,7 @@ from lib_defects4j import (  # noqa: E402
     parse_triggering_tests,
     run,
 )
+from rq5_check import compute_rq5, format_summary, write_summary  # noqa: E402
 
 
 def build_daikonpp(dpp_dir: Path) -> Path:
@@ -436,6 +437,12 @@ def main():
     print(f"    without_test outcomes: {outcomes_a}")
     print(f"    with_test outcomes:    {outcomes_b}")
     print("=" * 60)
+
+    print(">>> RQ5 (held-in-A -> falsified-in-B) analysis:")
+    rq5_result = compute_rq5(out_dir)
+    print(format_summary(rq5_result))
+    summary_path = write_summary(out_dir, rq5_result)
+    print(f"[INFO] RQ5 summary -> {summary_path}")
 
 
 if __name__ == "__main__":
