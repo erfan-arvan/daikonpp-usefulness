@@ -1,7 +1,7 @@
 #!/bin/bash -l
 #SBATCH --job-name=usefulness-daikon
-#SBATCH --output=%x.%j.out
-#SBATCH --error=%x.%j.err
+#SBATCH --output=%x.%A_%a.out
+#SBATCH --error=%x.%A_%a.err
 #SBATCH --partition=general
 #SBATCH --qos=standard
 #SBATCH --account=mjk76

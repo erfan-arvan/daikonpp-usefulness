@@ -1,7 +1,7 @@
 #!/bin/bash -l
 #SBATCH --job-name=usefulness
-#SBATCH --output=%x.%j.out
-#SBATCH --error=%x.%j.err
+#SBATCH --output=%x.%A_%a.out
+#SBATCH --error=%x.%A_%a.err
 #SBATCH --partition=general
 #SBATCH --qos=standard
 #SBATCH --account=mjk76
@@ -37,6 +37,22 @@ export DPP_DIR="$ROOT/daikonplusplus"
 # If setup.sh built things for you, source its env file (defects4j on PATH,
 # etc.) instead of relying on this job's own module loads / PATH:
 [[ -f "$ROOT/usefulness_env.sh" ]] && source "$ROOT/usefulness_env.sh"
+
+# Give each array task its own private copy of daikonplusplus. run_usefulness_bug.py
+# rebuilds the jar with `./gradlew shadowJar` on every invocation (no isolation
+# built in), so N array tasks racing against the SAME checkout's build/ directory
+# and jar file corrupt each other's builds -- confirmed directly: 11 of 15
+# concurrent array tasks failed within 1-2 minutes when they all pointed at one
+# shared checkout. A local `git clone` off the canonical checkout (same
+# filesystem, no network round trip) per task avoids this entirely.
+if [[ -n "${SLURM_ARRAY_TASK_ID:-}" ]]; then
+  CANONICAL_DPP_DIR="$DPP_DIR"
+  export DPP_DIR="${BUILD_ROOT:-$ROOT}/daikonplusplus-task-${SLURM_ARRAY_TASK_ID}"
+  if [[ ! -d "$DPP_DIR" ]]; then
+    echo ">>> Cloning a private daikonplusplus copy for this array task -> $DPP_DIR"
+    git clone "$CANONICAL_DPP_DIR" "$DPP_DIR"
+  fi
+fi
 
 # Defects4J's own docs say v2.x needs Java 8, which may not be the JDK you
 # module-loaded above for daikonplusplus. If so, uncomment and point this at
