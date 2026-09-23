@@ -48,6 +48,8 @@ import re
 import shutil
 import subprocess
 import sys
+import time
+from datetime import datetime
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -202,6 +204,10 @@ def phase(
     disable_real_llm: bool,
     label: str,
 ):
+    phase_start = time.monotonic()
+    print(f"[SYSTEM] {project}-{bug_id} phase={label} started at {datetime.now().isoformat(timespec='seconds')}")
+    print(f"[SYSTEM] {project}-{bug_id} phase={label} using cassette dir -> {cassette_dir}")
+
     version = f"{bug_id}b"
     work_dir = root / "defects4j" / f"{project}-{version}_{label}"
     if work_dir.exists():
@@ -366,11 +372,16 @@ def phase(
 
     shutil.rmtree(dp_workdir, ignore_errors=True)
 
+    elapsed = time.monotonic() - phase_start
     if proc.returncode != 0:
+        print(f"[SYSTEM] {project}-{bug_id} phase={label} FAILED at "
+              f"{datetime.now().isoformat(timespec='seconds')} (elapsed {elapsed:.1f}s)")
         raise subprocess.CalledProcessError(proc.returncode, "daikonplusplus")
 
     shutil.rmtree(work_dir, ignore_errors=True)
 
+    print(f"[SYSTEM] {project}-{bug_id} phase={label} finished at "
+          f"{datetime.now().isoformat(timespec='seconds')} (elapsed {elapsed:.1f}s)")
     return Path(env["DP_OUTCOMES"])
 
 
@@ -393,6 +404,10 @@ def main():
         help="output dir (default: ./outputs_usefulness/<project>_<bug>)",
     )
     args = ap.parse_args()
+
+    bug_start = time.monotonic()
+    print(f"[SYSTEM] {args.project}-{args.bug_id} bug run started at "
+          f"{datetime.now().isoformat(timespec='seconds')}")
 
     # By default defects4j swallows ant/maven build/test output on success
     # (captured via backticks in Utils::exec_cmd, only printed on failure or
@@ -489,6 +504,10 @@ def main():
     print(format_summary(rq5_result))
     summary_path = write_summary(out_dir, rq5_result)
     print(f"[INFO] RQ5 summary -> {summary_path}")
+
+    print(f"[SYSTEM] {args.project}-{args.bug_id} bug run finished at "
+          f"{datetime.now().isoformat(timespec='seconds')} "
+          f"(elapsed {time.monotonic() - bug_start:.1f}s)")
 
 
 if __name__ == "__main__":
