@@ -57,6 +57,16 @@ OPENAI_KEY_FILE="/project/mjk76/ea442/OPENAI_API_KEY.txt"
 export OPENAI_API_KEY="$(xargs < "$OPENAI_KEY_FILE")"
 [[ -n "$OPENAI_API_KEY" ]] || { echo "ERROR: $OPENAI_KEY_FILE is empty"; exit 1; }
 
+# DpConfig defaults DP_OPENAI_MODEL to "gpt-4.1" if unset -- far more
+# expensive than needed for this scale of experiment. NOTE: the LLM
+# cassette cache key is a hash of (system, user) prompt content only (see
+# daikonplusplus's Cassette.key()) -- it does NOT depend on which model
+# generated the cached response. So this only affects NEW cache-miss
+# prompts going forward; any prompt already recorded (under gpt-4.1, from
+# before this was added) keeps being replayed as-is on a cache hit,
+# regardless of this setting.
+export DP_OPENAI_MODEL=gpt-4.1-mini
+
 export ROOT="$PWD"
 export DPP_DIR="$ROOT/daikonplusplus"
 
