@@ -8,23 +8,32 @@
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=8
-#SBATCH --time=7-00:00:00
+#SBATCH --time=72:00:00
 #SBATCH --mem=128G
 
-# One array task per PROJECT (not per bug): each task runs ALL of that
-# project's bugs SEQUENTIALLY in a single process via run_usefulness_batch.py,
-# so different bug IDs of the SAME project never race on the same shared LLM
-# cassette dir (outputs_usefulness/_cassettes/<project>/) or the same
-# project's build/checkout state. Different PROJECTS still run in true
-# parallel, one per array task -- e.g. --array=0-14 for 15 projects, instead
-# of --array=0-775 for every individual bug.
+# One array task per PROJECT SHARD (not per bug): each task runs its slice
+# of that project's bugs SEQUENTIALLY in a single process via
+# run_usefulness_batch.py, so different bug IDs within the SAME shard never
+# race on the same shared LLM cassette dir (outputs_usefulness/_cassettes/
+# <project>/) or the same project's build/checkout state. Different
+# PROJECTS -- and different SHARDS of a large project -- still run in true
+# parallel, one per array task.
 #
-# --time=7-00:00:00 is a GUESS -- a project with 100+ bugs run sequentially
-# can plausibly take days, not hours. Check your QOS's actual max walltime
-# (`sacctmgr show qos standard format=MaxWall` or similar) and raise/lower
-# this to match; a job that hits the time limit mid-project is killed, not
-# paused, though --skip-existing below means resubmitting the same project
-# afterward picks up where it left off rather than redoing finished bugs.
+# A project with more than SHARD_THRESHOLD bugs is split into 2 shards
+# (first half / second half, in bugs_all.csv order) so it fits within one
+# job's walltime; smaller projects get a single shard covering everything.
+# Splitting a project's bugs across shards that run concurrently DOES mean
+# those shards write to the SAME shared cassette dir at the same time --
+# see the --shard docstring in run_usefulness_batch.py for why that's safe
+# for the common case (each cassette entry is its own file, keyed by a
+# prompt hash) but not risk-free for the rare case of two shards resolving
+# the exact same prompt at once.
+#
+# --time=72:00:00 -- verify this against your QOS's actual max walltime
+# (`sacctmgr show qos standard format=MaxWall`) if a shard still doesn't
+# finish in time; a job that hits the time limit is killed, not paused,
+# though --skip-existing below means resubmitting the same shard afterward
+# picks up where it left off rather than redoing finished bugs.
 
 set -euo pipefail
 
@@ -74,13 +83,41 @@ fi
 command -v defects4j >/dev/null || { echo "ERROR: defects4j not on PATH"; exit 1; }
 
 # BUGS_CSV holds every project's bugs together (e.g. bugs_all.csv, generated
-# by gen_bugs_all_csv.py). The Nth unique project name (sorted, 0-indexed)
-# in that CSV is this array task's project -- run_usefulness_batch.py's own
-# --project flag then filters BUGS_CSV down to just that project's rows.
-# Override with `sbatch --export=ALL,BUGS_CSV=/path/to/other.csv ...`.
+# by gen_bugs_all_csv.py). Override with
+# `sbatch --export=ALL,BUGS_CSV=/path/to/other.csv ...`.
 BUGS_CSV="${BUGS_CSV:-$ROOT/bugs_all.csv}"
-PROJECT=$(awk -F, 'NR>1 {print $1}' "$BUGS_CSV" | sort -u | sed -n "$((SLURM_ARRAY_TASK_ID + 1))p")
-[[ -n "$PROJECT" ]] || { echo "ERROR: no project found at index $SLURM_ARRAY_TASK_ID in $BUGS_CSV"; exit 1; }
 
-echo ">>> Running usefulness experiment for project=$PROJECT (sequential batch)"
-python3 "$ROOT/run_usefulness_batch.py" "$BUGS_CSV" --project "$PROJECT" --skip-existing
+# A project with more than SHARD_THRESHOLD bugs gets 2 shards (first half /
+# second half); override with `sbatch --export=ALL,SHARD_THRESHOLD=N ...`.
+SHARD_THRESHOLD="${SHARD_THRESHOLD:-50}"
+
+# Build the ordered (project,shard,num_shards) list this array indexes
+# into. Recomputed by every task from BUGS_CSV -- cheap (hundreds of rows)
+# and keeps this in sync with BUGS_CSV without a separate generated file
+# to keep up to date.
+SHARD_LIST=$(mktemp)
+trap 'rm -f "$SHARD_LIST"' EXIT
+for p in $(awk -F, 'NR>1 {print $1}' "$BUGS_CSV" | sort -u); do
+  count=$(awk -F, -v p="$p" 'NR>1 && $1==p' "$BUGS_CSV" | wc -l)
+  if [[ "$count" -gt "$SHARD_THRESHOLD" ]]; then
+    echo "$p,0,2" >> "$SHARD_LIST"
+    echo "$p,1,2" >> "$SHARD_LIST"
+  else
+    echo "$p,0,1" >> "$SHARD_LIST"
+  fi
+done
+
+ROW=$(sed -n "$((SLURM_ARRAY_TASK_ID + 1))p" "$SHARD_LIST")
+[[ -n "$ROW" ]] || { echo "ERROR: no shard found at index $SLURM_ARRAY_TASK_ID in $SHARD_LIST (built from $BUGS_CSV)"; exit 1; }
+PROJECT="${ROW%%,*}"
+REST="${ROW#*,}"
+SHARD="${REST%%,*}"
+NUM_SHARDS="${REST#*,}"
+
+if [[ "$NUM_SHARDS" -gt 1 ]]; then
+  echo ">>> Running usefulness experiment for project=$PROJECT shard=$SHARD/$NUM_SHARDS (sequential batch)"
+  python3 "$ROOT/run_usefulness_batch.py" "$BUGS_CSV" --project "$PROJECT" --shard "$SHARD/$NUM_SHARDS" --skip-existing
+else
+  echo ">>> Running usefulness experiment for project=$PROJECT (sequential batch)"
+  python3 "$ROOT/run_usefulness_batch.py" "$BUGS_CSV" --project "$PROJECT" --skip-existing
+fi

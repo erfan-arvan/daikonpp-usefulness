@@ -15,11 +15,26 @@ CSV format (header required):
     ...
 
 Usage:
-    python3 run_usefulness_batch.py bugs.csv [--skip-existing] [--project NAME]
+    python3 run_usefulness_batch.py bugs.csv [--skip-existing] [--project NAME] [--shard I/N]
 
 --project NAME restricts the run to just that project's rows in csv_file,
 so one shared bugs_all.csv can drive every project's per-task batch run
 without needing a separate CSV file per project.
+
+--shard I/N (0 <= I < N) further restricts to a contiguous 1/N slice of
+those rows (in csv_file order) -- e.g. --shard 0/2 for the first half,
+--shard 1/2 for the second -- so a project with too many bugs to run
+sequentially in one job's walltime can be split across N separate SLURM
+array tasks. Splitting a project this way means its shards DO run
+concurrently and DO write to the same shared cassette dir -- daikonplusplus's
+own Cassette.write() writes each entry as its own separate file keyed by a
+prompt hash (see llm/Cassette.java), so two DIFFERENT prompts never
+collide, but it is a plain (non-atomic) file write, so two shards
+resolving the EXACT SAME prompt (plausible here, since cassette sharing
+relies on many prompts being identical across a project's bug versions)
+at the same moment could race on that one file. Narrower and rarer than
+the checkout/build races a shared DPP_DIR caused, so accepted as a
+tradeoff rather than engineered around.
 """
 from __future__ import annotations
 
@@ -63,7 +78,17 @@ def main():
     ap.add_argument("csv_file")
     ap.add_argument("--skip-existing", action="store_true")
     ap.add_argument("--project", default=None, help="restrict to this project's rows only")
+    ap.add_argument("--shard", default=None, help="I/N: run only the I-th of N contiguous slices")
     args = ap.parse_args()
+
+    shard_index = shard_count = None
+    if args.shard:
+        try:
+            shard_index_s, shard_count_s = args.shard.split("/")
+            shard_index, shard_count = int(shard_index_s), int(shard_count_s)
+            assert 0 <= shard_index < shard_count
+        except (ValueError, AssertionError):
+            sys.exit(f"ERROR: --shard must be I/N with 0 <= I < N, got {args.shard!r}")
 
     LOG_ROOT.mkdir(parents=True, exist_ok=True)
 
@@ -81,8 +106,18 @@ def main():
         if not rows:
             sys.exit(f"ERROR: no rows for project={args.project!r} in {csv_path}")
 
+    if shard_count:
+        total = len(rows)
+        chunk = -(-total // shard_count)  # ceil division
+        start = shard_index * chunk
+        end = min(start + chunk, total)
+        rows = rows[start:end]
+        if not rows:
+            sys.exit(f"ERROR: shard {args.shard} of {total} rows is empty")
+
     log(f"===== STARTING BATCH RUN ({len(rows)} bugs"
-        f"{f', project={args.project}' if args.project else ''}) =====")
+        f"{f', project={args.project}' if args.project else ''}"
+        f"{f', shard={args.shard}' if args.shard else ''}) =====")
 
     for i, row in enumerate(rows, 1):
         project = row["project"].strip()
