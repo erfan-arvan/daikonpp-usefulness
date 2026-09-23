@@ -96,8 +96,10 @@ fi
 command -v defects4j >/dev/null || { echo "ERROR: defects4j not on PATH"; exit 1; }
 
 # One bug per array task (recommended): edit --array below to match the
-# number of rows in bugs.csv (0-indexed, inclusive), e.g. --array=0-99
-BUGS_CSV="$ROOT/bugs.csv"
+# number of rows in bugs.csv (0-indexed, inclusive), e.g. --array=0-99.
+# Override with `sbatch --export=ALL,BUGS_CSV=/path/to/other.csv submit.sh`
+# to run a different bug list (e.g. bugs_all.csv) without editing this file.
+BUGS_CSV="${BUGS_CSV:-$ROOT/bugs.csv}"
 LINE_NO=$(( SLURM_ARRAY_TASK_ID + 2 ))  # +2: skip header, 1-index sed/awk
 ROW=$(awk -F, -v n="$LINE_NO" 'NR==n {print $1","$2}' "$BUGS_CSV")
 PROJECT="${ROW%%,*}"

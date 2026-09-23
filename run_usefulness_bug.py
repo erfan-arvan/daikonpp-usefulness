@@ -400,7 +400,16 @@ def main():
     # claiming "done" for the whole overwrite window based on the old run.
     (out_dir / "RUN_COMPLETE").unlink(missing_ok=True)
 
-    cassette_dir = out_dir / "cassettes"
+    # Shared PER-PROJECT, not per-bug: DP_LLM_CASSETTES keys a recorded
+    # response by a hash of the (system, user) prompt, which is derived
+    # from MAIN source + program point -- and different bug IDs of the SAME
+    # Defects4J project share almost all of their main source (they differ
+    # only by that one bug's fix diff). A per-bug cassette dir would re-pay
+    # for a near-identical LLM call on every single bug of a project;
+    # sharing one cassette dir across all of a project's bugs means a
+    # prompt already recorded for one bug's untouched-by-that-bug's-diff
+    # method is reused free for every other bug of the same project.
+    cassette_dir = root / "outputs_usefulness" / "_cassettes" / args.project
     cassette_dir.mkdir(parents=True, exist_ok=True)
 
     jar = build_daikonpp(dpp_dir)
