@@ -88,7 +88,14 @@ def _slurm_task_done(bug_dir: Path) -> bool | None:
             capture_output=True, text=True, timeout=30,
         ).stdout
         sacct_out = subprocess.run(
-            ["sacct", "--name=usefulness", "--format=JobID,State", "-X", "-n", "-P"],
+            # sacct defaults to only today's jobs unless -S is given -- without
+            # it, a job submitted on an earlier day (the normal case, since
+            # this is checked well after a run finishes) silently returns
+            # nothing, making every one of its bugs look "undeterminable"
+            # even though sacct has the record. -S 1970-01-01 disables that
+            # default window entirely.
+            ["sacct", "--name=usefulness", "--format=JobID,State", "-X", "-n", "-P",
+             "-S", "1970-01-01"],
             capture_output=True, text=True, timeout=30,
         ).stdout
     except (OSError, subprocess.SubprocessError):
@@ -239,7 +246,10 @@ def main():
         if not outputs_dir.is_dir():
             print(f"ERROR: {outputs_dir} is not a directory")
             raise SystemExit(1)
-        bug_dirs = sorted(p for p in outputs_dir.iterdir() if p.is_dir())
+        # "_cassettes" (the shared per-project LLM cassette dir, see
+        # run_usefulness_bug.py) isn't a bug output dir -- skip it here
+        # instead of letting it show up as an unparseable SKIP entry.
+        bug_dirs = sorted(p for p in outputs_dir.iterdir() if p.is_dir() and not p.name.startswith("_"))
     else:
         bug_dirs = [Path(args[0])]
 
