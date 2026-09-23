@@ -136,27 +136,49 @@ def _key(record: dict) -> str:
     return record["kind"] + "|" + record["element"] + "|" + " ".join(record["expr"].split())
 
 
+_lenient_decoder = json.JSONDecoder(strict=False)
+
+
+def _iter_json_objects(path: Path):
+    """Yields each JSON object from a JSONL-ish file, tolerant of a
+    daikonplusplus writer quirk where a source comment (javadoc opener,
+    line comment) lands in a field -- e.g. its return-type descriptor
+    picking up a trailing comment instead of an actual type -- and gets
+    written back with that comment's raw, unescaped newline/control
+    characters instead of JSON-escaping them (\\n, \\u0000, etc). That
+    breaks both strict JSON parsing (a raw control character inside a
+    string is illegal JSON) and naive line-by-line splitting (the literal
+    embedded newline splits one record's bytes across two physical
+    "lines"). Decoding the whole file positionally with a non-strict
+    decoder sidesteps both: raw_decode finds the next complete JSON value
+    from wherever the previous one ended regardless of embedded newlines,
+    and non-strict mode accepts the otherwise-illegal raw control
+    characters as literal string content -- recovering the real record
+    daikonplusplus meant to write instead of discarding it.
+    """
+    text = path.read_text(encoding="utf-8", errors="replace")
+    idx, n = 0, len(text)
+    while idx < n:
+        while idx < n and text[idx].isspace():
+            idx += 1
+        if idx >= n:
+            break
+        obj, end = _lenient_decoder.raw_decode(text, idx)
+        yield obj
+        idx = end
+
+
 def _load_verdicts(reg_path: Path, out_path: Path) -> dict[str, str]:
     """Returns {(kind|element|expr) key: verdict} for one phase."""
     id_to_key: dict[str, str] = {}
-    with open(reg_path) as f:
-        for line in f:
-            line = line.strip()
-            if not line:
-                continue
-            r = json.loads(line)
-            id_to_key[r["id"]] = _key(r)
+    for r in _iter_json_objects(reg_path):
+        id_to_key[r["id"]] = _key(r)
 
     key_to_verdict: dict[str, str] = {}
-    with open(out_path) as f:
-        for line in f:
-            line = line.strip()
-            if not line:
-                continue
-            o = json.loads(line)
-            key = id_to_key.get(o["id"])
-            if key:
-                key_to_verdict[key] = o["verdict"]
+    for o in _iter_json_objects(out_path):
+        key = id_to_key.get(o["id"])
+        if key:
+            key_to_verdict[key] = o["verdict"]
     return key_to_verdict
 
 
