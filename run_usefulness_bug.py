@@ -297,7 +297,14 @@ def phase(
 
     log_file = out_dir / f"{label}.log"
     print(f"[INFO] {label} log -> {log_file}")
-    with open(log_file, "w") as logf:
+    # buffering=1 (line-buffered) + flush=True below: this script's own
+    # stdout is redirected to a file (the SLURM .out), not a TTY, so Python
+    # defaults to FULLY buffered stdout -- print() output sits in an
+    # internal buffer of several KB and doesn't reach disk until it fills
+    # or the process exits. Without an explicit flush, both this log file
+    # and the SLURM .out appear frozen for long stretches even while the
+    # subprocess is actively producing output, which reads as a hang.
+    with open(log_file, "w", buffering=1) as logf:
         proc = subprocess.Popen(
             [
                 "java",
@@ -336,7 +343,7 @@ def phase(
             bufsize=1,
         )
         for line in proc.stdout:
-            print(line, end="")
+            print(line, end="", flush=True)
             logf.write(line)
         proc.wait()
 
@@ -368,6 +375,14 @@ def phase(
 
 
 def main():
+    # This script's own stdout is redirected to a file under SLURM (the
+    # .out log), not a TTY, so Python defaults to fully buffered stdout --
+    # every print() below (checkout progress, phase banners, "waiting on
+    # LLM tasks" passthrough, etc.) would otherwise sit in an internal
+    # buffer for a long time instead of reaching disk, making an actively
+    # running job look frozen when tailing the log.
+    sys.stdout.reconfigure(line_buffering=True)
+
     ap = argparse.ArgumentParser()
     ap.add_argument("project")
     ap.add_argument("bug_id")
