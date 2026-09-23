@@ -54,16 +54,19 @@ def _bugs_csv_row_index(bugs_csv: Path, project: str, bug_id: str) -> int | None
     return None
 
 
-def _slurm_task_done(bug_dir: Path) -> bool | None:
-    """Asks SLURM directly whether this bug's array task last finished
-    COMPLETED and isn't currently running again, instead of trusting the
-    RUN_COMPLETE marker (which only exists for runs launched after that
-    marker was added) or the mtimes/contents of files that a still-running
-    or requeued task can be actively overwriting in place.
+def _slurm_task_state(bug_dir: Path) -> str | None:
+    """Asks SLURM directly for this bug's array task's current status,
+    instead of trusting the RUN_COMPLETE marker (which only exists for runs
+    launched after that marker was added) or the mtimes/contents of files
+    that a still-running or requeued task can be actively overwriting in
+    place.
 
-    Returns True/False, or None if this can't be determined (not on a
-    SLURM node, sacct/squeue missing, bugs.csv not found, or no matching
-    accounting record -- e.g. it aged out of sacct's history).
+    Returns "RUNNING" (queued/running right now, any job id), the sacct
+    State string of the most recently submitted job for that array index
+    (e.g. "COMPLETED", "FAILED", "CANCELLED"), or None if this can't be
+    determined at all (not on a SLURM node, sacct/squeue missing, bugs.csv
+    not found, or no matching accounting record -- e.g. it aged out of
+    sacct's history).
     """
     m = re.match(r"^(.+)_(\S+)$", bug_dir.name)
     if not m:
@@ -106,7 +109,7 @@ def _slurm_task_done(bug_dir: Path) -> bool | None:
     # history says about an earlier attempt.
     running_indices = {line.split("_")[-1] for line in squeue_out.splitlines() if "_" in line}
     if str(idx) in running_indices:
-        return False
+        return "RUNNING"
 
     # Among sacct's history for this array index, only the most recently
     # submitted job (highest numeric job id) reflects the CURRENT contents
@@ -126,9 +129,7 @@ def _slurm_task_done(bug_dir: Path) -> bool | None:
         if job_num > best_job_num:
             best_job_num = job_num
             best_state = state
-    if best_state is None:
-        return None
-    return best_state == "COMPLETED"
+    return best_state
 
 
 def _key(record: dict) -> str:
@@ -174,14 +175,16 @@ def compute_rq5(bug_dir: Path, require_complete: bool = True) -> dict:
     NEITHER can confirm completion does this raise.
     """
     if require_complete and not (bug_dir / "RUN_COMPLETE").exists():
-        slurm_done = _slurm_task_done(bug_dir)
-        if slurm_done is True:
+        state = _slurm_task_state(bug_dir)
+        if state == "COMPLETED":
             # Confirmed independently via sacct/squeue -- backfill the
             # marker so future calls take the fast path without re-asking
             # SLURM every time.
             (bug_dir / "RUN_COMPLETE").write_text("backfilled from sacct\n")
-        elif slurm_done is False:
+        elif state == "RUNNING":
             raise RunIncompleteError(f"{bug_dir}: SLURM shows this bug's task is still running/requeued")
+        elif state is not None:
+            raise RunIncompleteError(f"{bug_dir}: SLURM shows this bug's task ended in state {state}, not COMPLETED")
         else:
             raise RunIncompleteError(
                 f"{bug_dir}/RUN_COMPLETE not found and SLURM state couldn't be determined "
