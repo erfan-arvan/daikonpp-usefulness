@@ -469,24 +469,26 @@ def main():
     print(f"    with_test outcomes:    {outcomes_b}")
     print("=" * 60)
 
+    # Written BEFORE the compute_rq5() call right below, not after: both
+    # phases have genuinely finished at this point in THIS process, so
+    # there is nothing left to verify. compute_rq5()'s SLURM self-check
+    # (added so rq5_check.py --all can trust a bug finished by an earlier,
+    # pre-marker version of this script) asks squeue whether this array
+    # task is still running -- which, called from inside that very task
+    # while it's still executing, always and correctly answers "yes",
+    # making compute_rq5() raise RunIncompleteError and crash the whole
+    # script with a nonzero exit right after real success. Confirmed
+    # directly on Time-27: both phases completed and printed DONE above,
+    # but sacct still recorded FAILED because of this ordering bug. Writing
+    # the marker first makes compute_rq5() take the fast, no-SLURM-check
+    # path instead.
+    (out_dir / "RUN_COMPLETE").write_text(f"{args.project}-{args.bug_id}\n")
+
     print(">>> RQ5 (held-in-A -> falsified-in-B) analysis:")
     rq5_result = compute_rq5(out_dir)
     print(format_summary(rq5_result))
     summary_path = write_summary(out_dir, rq5_result)
     print(f"[INFO] RQ5 summary -> {summary_path}")
-
-    # Written LAST, only once both phases and the RQ5 analysis have actually
-    # finished. rq5_check.py's --all mode refuses to report on a bug_dir
-    # missing this marker -- out_dir is reused across re-runs of the same
-    # bug (nothing clears it), so a bug currently being re-run overwrites
-    # its registry/outcomes files in place; a snapshot taken mid-overwrite
-    # can still parse as valid, complete-looking JSON even though it's a
-    # mix of the old finished run and a few freshly-appended records from
-    # the new one in progress. Confirmed directly on Lang-65: rq5_check.py
-    # reported a clean "0 true catches" result while defects4j checkout
-    # for the SAME bug's new attempt was already fresh in
-    # daikonpp_registry_without_test.jsonl.
-    (out_dir / "RUN_COMPLETE").write_text(f"{args.project}-{args.bug_id}\n")
 
 
 if __name__ == "__main__":
