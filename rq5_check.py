@@ -275,7 +275,7 @@ def main():
         # "batch_logs" (run_usefulness_batch.py's own log directory) aren't
         # bug output dirs -- skip them here instead of letting them show up
         # as unparseable SKIP entries.
-        non_bug_dirs = {"batch_logs"}
+        non_bug_dirs = {"batch_logs", "batch_logs_daikon"}
         bug_dirs = sorted(
             p
             for p in outputs_dir.iterdir()
