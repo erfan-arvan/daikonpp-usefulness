@@ -278,6 +278,11 @@ def main():
     else:
         bug_dirs = [Path(args[0])]
 
+    total_bug_dirs = len(bug_dirs)
+    finished = 0
+    skipped = 0
+    total_true_catches = 0
+
     for bug_dir in bug_dirs:
         try:
             result = compute_rq5(bug_dir, require_complete=not allow_incomplete)
@@ -292,13 +297,23 @@ def main():
             # Treat all three as "not ready yet" rather than crashing the
             # whole batch or reporting a number that isn't final.
             print(f"{bug_dir}: SKIP ({e})")
+            skipped += 1
             continue
         print(format_summary(result))
         write_summary(bug_dir, result)
         if allow_incomplete and not (bug_dir / "RUN_COMPLETE").exists():
             print("  *** WARNING: RUN_COMPLETE marker missing -- this bug is still "
                   "running or was re-run; the numbers above are NOT final. ***")
+        else:
+            finished += 1
+            total_true_catches += len(result["true_catches"])
         print()
+
+    print("==== TOTAL ====")
+    print(f"bug dirs found:        {total_bug_dirs}")
+    print(f"finished (counted):    {finished}")
+    print(f"skipped (not ready):   {skipped}")
+    print(f"total TRUE bug-catches across finished bugs: {total_true_catches}")
 
 
 if __name__ == "__main__":
