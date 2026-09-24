@@ -4,14 +4,20 @@ Daikon has no built-in "check this specific invariant against a new trace"
 mode the way Oca's runtime probes do. The equivalent signal used here:
 
   - Run Daikon on trace A (suite minus the bug-revealing test) -> set A.
-  - Run Daikon on traces [A, bug] merged -> set A_plus_bug.
-  - An invariant in A that is MISSING from A_plus_bug was contradicted by a
-    sample in the bug trace -- Daikon simply stops reporting anything any
-    observed sample violates. That's the Daikon-side analog of "FALSIFIED".
-  - An invariant in A that is still present in A_plus_bug survived -> "HELD".
-  - Invariants that appear only in A_plus_bug (not proposed from A) are
-    ignored, mirroring Oca's model where only candidates from the
-    without-test phase are candidates at all.
+  - Run Daikon on the FULL unmodified suite (every test, including the
+    bug-revealing one), as its own independent run -> set Full. NOT a merge
+    of trace A with an isolated bug-only trace -- see
+    run_daikon_usefulness_bug.py for why an isolated-then-merged trace was
+    dropped (it confounded the bug's effect with artifacts of running one
+    test alone).
+  - An invariant in A that is MISSING from Full was contradicted by a
+    sample somewhere in the full-suite run -- Daikon simply stops reporting
+    anything any observed sample violates. That's the Daikon-side analog of
+    "FALSIFIED".
+  - An invariant in A that is still present in Full survived -> "HELD".
+  - Invariants that appear only in Full (not proposed from A) are ignored,
+    mirroring Oca's model where only candidates from the without-test phase
+    are candidates at all.
 
 Verified against real `daikon.PrintInvariants` output (daikon.jar built
 from the codespecs/daikon source, version 5.9.1) on a small hand-written
