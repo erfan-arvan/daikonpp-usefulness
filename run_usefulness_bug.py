@@ -29,8 +29,12 @@ Differences from the old daikonppTests/run_daikonpp_defects4j_{with,without}_tes
   - Disables the triggering test with a small regex/brace-matching pass
     (lib_defects4j.disable_test_method) instead of the missing RemoveMethod /
     RewriteMethodViaLLM JavaParser tool, so no extra jar/tool build is needed.
-  - Turns on DP_TEST_FILTER=1 (test-driven side-effect isolation / delta
-    debugging, section 3.3.4 of the paper) which the old scripts left off.
+  - DP_TEST_FILTER (test-driven side-effect isolation / delta debugging,
+    section 3.3.4 of the paper) is OFF (DP_TEST_FILTER=0). It was on for a
+    while, but each ddmin trial requires a full test-suite re-run, and for
+    large/slow-testing projects this can take 10+ trials per bug at several
+    minutes each -- confirmed directly on JacksonCore, Lang, and Math, each
+    still grinding through trials after ~19 hours on a single bug.
 
 Usage:
     python3 run_usefulness_bug.py <PROJECT> <BUG_ID> [--maxk N] [--out DIR]
@@ -271,7 +275,15 @@ def phase(
     env["DP_KEEP_WORK"] = "1"
     env["DP_DISABLE_REAL_LLM"] = "1" if disable_real_llm else "0"
     env["DP_LLM_CASSETTES"] = str(cassette_dir)
-    env["DP_TEST_FILTER"] = "1"
+    # Test-driven side-effect isolation / delta debugging (section 3.3.4 of
+    # the paper). Disabled: each ddmin trial requires a full test-suite
+    # re-run, and for large/slow-testing projects this can take 10+ trials
+    # per bug at several minutes each -- confirmed directly on JacksonCore,
+    # Lang, and Math, which were each still grinding through delta-debugging
+    # trials after ~19 hours on a single bug. Turning it off trades that cost
+    # for leaving a test failure that can't already be attributed to a
+    # specific invariant online unresolved, rather than bisected.
+    env["DP_TEST_FILTER"] = "0"
     # Oca config for this experiment: few-shot prompting, and context limited
     # to method body + in-scope variables/types + enclosing class javadoc
     # (DpConfig defaults to prompt strategy "baseline" and ALL 8 ContextKinds
