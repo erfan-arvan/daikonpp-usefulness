@@ -11,13 +11,19 @@ diffing (see daikon_diff_invariants.py for the full rationale):
     Run Daikon on traceA alone -> invariantsA.txt. This is the candidate
     property set (mirrors Oca's without_test phase).
 
-  Phase B ("bug_trace"): run Chicory over ONLY the triggering test
-    method(s), on the SAME (unmodified) checkout, producing bug.dtrace.gz.
-    Run Daikon on [traceA, bug.dtrace.gz] merged -> invariantsAB.txt.
+  Phase B ("full_suite"): run Chicory over the FULL unmodified test suite
+    (every test, including the triggering one) as ONE natural execution,
+    producing traceFull.dtrace.gz. Run Daikon on traceFull ALONE (no
+    merge, no reuse of traceA's data) -> invariantsFull.txt. Running the
+    triggering test isolated-then-merged (an earlier version of this
+    script) confounded "the bug's effect" with "artifacts of running one
+    test alone" (different static-init order, JVM warm-up state, etc. than
+    it would ever have as part of the real suite); running the whole suite
+    together avoids that.
 
-  Diff: any invariant present in invariantsA but missing from invariantsAB
-    was contradicted by a sample from the triggering test -- i.e. Daikon's
-    equivalent of Oca's FALSIFIED verdict. Written to
+  Diff: any invariant present in invariantsA but missing from invariantsFull
+    was contradicted by a sample somewhere in the full-suite run -- i.e.
+    Daikon's equivalent of Oca's FALSIFIED verdict. Written to
     outputs_usefulness/<PROJECT>_<BUG>/daikon_outcomes.jsonl in the same
     {"ppt", "invariant", "verdict"} shape analyze_usefulness.py expects.
 
@@ -257,13 +263,24 @@ def main():
         else:
             specs_without_bug.append(cls)
 
-    # Phase B specs: only the triggering method(s).
-    specs_bug_only = [f"{cls}::{meth}" for cls, meth in triggering]
+    # Phase B specs: the FULL unmodified test suite (every class, nothing
+    # excluded, including the triggering test) -- run as ONE natural
+    # execution, not the triggering test in isolation. Running the
+    # triggering test alone in its own JVM (the old design) and then
+    # merging that isolated trace with trace_a at the Daikon level
+    # confounds "the bug's actual effect" with "artifacts of running this
+    # one test alone" (different static-init order, different JVM warm-up
+    # state, different execution context than it would ever naturally have
+    # as part of the real suite). Running the whole suite together instead
+    # gives the triggering test its normal execution context, and Daikon
+    # infers invFull directly from that single trace -- no merge, no reuse
+    # of trace_a's data at all.
+    specs_full_suite = list(all_classes)
 
     runner_classes = compile_runner(cp_test, out_dir / "runner-classes")
 
     trace_a = out_dir / "traceA.dtrace.gz"
-    trace_bug = out_dir / "traceBug.dtrace.gz"
+    trace_full = out_dir / "traceFull.dtrace.gz"
 
     print("=" * 60)
     print(f">>> Chicory phase A (without triggering test): {args.project}-{args.bug_id}")
@@ -273,25 +290,25 @@ def main():
     )
 
     print("=" * 60)
-    print(f">>> Chicory phase B (triggering test only): {args.project}-{args.bug_id}")
+    print(f">>> Chicory phase B (full unmodified suite): {args.project}-{args.bug_id}")
     print("=" * 60)
     run_chicory(
-        daikon_jar, runner_classes, cp_test, pkg_pattern, omit_pattern, trace_bug, work_dir, specs_bug_only
+        daikon_jar, runner_classes, cp_test, pkg_pattern, omit_pattern, trace_full, work_dir, specs_full_suite
     )
 
     inv_a = out_dir / "invA.inv.gz"
-    inv_ab = out_dir / "invAB.inv.gz"
+    inv_full = out_dir / "invFull.inv.gz"
 
     print(">>> Daikon on trace A alone")
     run_daikon(daikon_jar, [trace_a], inv_a)
 
-    print(">>> Daikon on trace A + bug trace")
-    run_daikon(daikon_jar, [trace_a, trace_bug], inv_ab)
+    print(">>> Daikon on the full-suite trace alone (no merge with trace A)")
+    run_daikon(daikon_jar, [trace_full], inv_full)
 
     text_a = print_invariants(daikon_jar, inv_a)
-    text_ab = print_invariants(daikon_jar, inv_ab)
+    text_ab = print_invariants(daikon_jar, inv_full)
     (out_dir / "invariantsA.txt").write_text(text_a)
-    (out_dir / "invariantsAB.txt").write_text(text_ab)
+    (out_dir / "invariantsFull.txt").write_text(text_ab)
 
     before = parse_daikon_invariants(text_a)
     after = parse_daikon_invariants(text_ab)
