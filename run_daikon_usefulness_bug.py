@@ -125,7 +125,6 @@ def run_chicory(
         f"--ppt-select-pattern={pkg_pattern}",
         f"--ppt-omit-pattern={omit_pattern}",
         f"--dtrace-file={tmp_name}",
-        "--sample-start=5",
         "DaikonTestRunner",
         *specs,
     ]
