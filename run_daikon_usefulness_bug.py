@@ -38,6 +38,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -61,6 +62,28 @@ RUNNER_SRC = THIS_DIR / "DaikonTestRunner.java"
 OMIT_PATTERN = r"junit\.|org\.junit\.|sun\.|java\.|com\.sun\.proxy"
 
 
+def build_full_omit_pattern(test_classes: list[str]) -> str:
+    """Extends OMIT_PATTERN to also exclude every test class actually being
+    run under Chicory.
+
+    The project's own test classes (e.g. org.apache.commons.cli.bug.BugCLI252Test)
+    live under the SAME top-level package as the production code, so
+    derive_package_pattern()'s --ppt-select-pattern matches them too, and
+    OMIT_PATTERN alone only excludes JUnit/JDK internals -- not the
+    project's own tests. Left unfixed, Daikon infers "invariants" over test
+    FIXTURE state (the test class's own instance fields) instead of the
+    actual program under test -- e.g. "this.options.requiredOpts has only
+    one value" on a test class's own field, which trivially differs between
+    Phase A and Phase B/bug runs for reasons having nothing to do with the
+    bug (different test methods ran, populating that field differently),
+    polluting the FALSIFIED count with noise instead of genuine catches.
+    """
+    if not test_classes:
+        return OMIT_PATTERN
+    test_class_pattern = "|".join(re.escape(c) for c in test_classes)
+    return f"{OMIT_PATTERN}|{test_class_pattern}"
+
+
 def checkout(project: str, version: str, work_dir: Path):
     if not work_dir.is_dir():
         run(
@@ -80,6 +103,7 @@ def run_chicory(
     runner_classes: Path,
     cp_test: str,
     pkg_pattern: str,
+    omit_pattern: str,
     out_dtrace: Path,
     work_dir: Path,
     specs: list[str],
@@ -99,7 +123,7 @@ def run_chicory(
         cp,
         "daikon.Chicory",
         f"--ppt-select-pattern={pkg_pattern}",
-        f"--ppt-omit-pattern={OMIT_PATTERN}",
+        f"--ppt-omit-pattern={omit_pattern}",
         f"--dtrace-file={tmp_name}",
         "--sample-start=5",
         "DaikonTestRunner",
@@ -221,6 +245,9 @@ def main():
     if not all_classes:
         sys.exit(f"ERROR: no compiled test classes found under {bin_tests}")
 
+    omit_pattern = build_full_omit_pattern(all_classes)
+    print(f"[INFO] ppt-omit-pattern (incl. {len(all_classes)} test classes) = {omit_pattern}")
+
     # Phase A specs: every test class, with triggering methods excluded from
     # whichever class(es) contain them.
     specs_without_bug = []
@@ -242,12 +269,16 @@ def main():
     print("=" * 60)
     print(f">>> Chicory phase A (without triggering test): {args.project}-{args.bug_id}")
     print("=" * 60)
-    run_chicory(daikon_jar, runner_classes, cp_test, pkg_pattern, trace_a, work_dir, specs_without_bug)
+    run_chicory(
+        daikon_jar, runner_classes, cp_test, pkg_pattern, omit_pattern, trace_a, work_dir, specs_without_bug
+    )
 
     print("=" * 60)
     print(f">>> Chicory phase B (triggering test only): {args.project}-{args.bug_id}")
     print("=" * 60)
-    run_chicory(daikon_jar, runner_classes, cp_test, pkg_pattern, trace_bug, work_dir, specs_bug_only)
+    run_chicory(
+        daikon_jar, runner_classes, cp_test, pkg_pattern, omit_pattern, trace_bug, work_dir, specs_bug_only
+    )
 
     inv_a = out_dir / "invA.inv.gz"
     inv_ab = out_dir / "invAB.inv.gz"
