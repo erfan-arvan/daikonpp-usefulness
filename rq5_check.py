@@ -271,10 +271,16 @@ def main():
         if not outputs_dir.is_dir():
             print(f"ERROR: {outputs_dir} is not a directory")
             raise SystemExit(1)
-        # "_cassettes" (the shared per-project LLM cassette dir, see
-        # run_usefulness_bug.py) isn't a bug output dir -- skip it here
-        # instead of letting it show up as an unparseable SKIP entry.
-        bug_dirs = sorted(p for p in outputs_dir.iterdir() if p.is_dir() and not p.name.startswith("_"))
+        # "_cassettes" (the shared per-project LLM cassette dir) and
+        # "batch_logs" (run_usefulness_batch.py's own log directory) aren't
+        # bug output dirs -- skip them here instead of letting them show up
+        # as unparseable SKIP entries.
+        non_bug_dirs = {"batch_logs"}
+        bug_dirs = sorted(
+            p
+            for p in outputs_dir.iterdir()
+            if p.is_dir() and not p.name.startswith("_") and p.name not in non_bug_dirs
+        )
     else:
         bug_dirs = [Path(args[0])]
 
