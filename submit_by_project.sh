@@ -124,6 +124,19 @@ REST="${ROW#*,}"
 SHARD="${REST%%,*}"
 NUM_SHARDS="${REST#*,}"
 
+# Closure's LLM-generated invariants include a large volume of JsonML/Node API
+# hallucinations (LLM confuses Closure Compiler's JsonML class with its Node
+# class) spread across 150+ distinct source files. The autofilter's default
+# budget (10 modify passes + 20 restore-only passes) isn't nearly enough to
+# work through that many broken files -- confirmed empirically: a real run
+# was still discovering brand-new files needing restoration at pass 30/30.
+# Widen both budgets for Closure only; every other project keeps daikonplusplus's
+# defaults (DpConfig.autofilterMaxModifyPasses/autofilterMaxExtraPasses).
+if [[ "$PROJECT" == "Closure" ]]; then
+  export DP_AUTOFILTER_MAX_MODIFY_PASSES=150
+  export DP_AUTOFILTER_MAX_EXTRA_PASSES=150
+fi
+
 if [[ "$NUM_SHARDS" -gt 1 ]]; then
   echo ">>> Running usefulness experiment for project=$PROJECT shard=$SHARD/$NUM_SHARDS (sequential batch)"
   python3 "$ROOT/run_usefulness_batch.py" "$BUGS_CSV" --project "$PROJECT" --shard "$SHARD/$NUM_SHARDS" --skip-existing
