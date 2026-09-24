@@ -40,9 +40,48 @@ real output:
 """
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 _SEP_CHARS = "="
+
+# Daikon invariants that assert equality/membership against a specific
+# LITERAL constant (a quoted string, a bare number) rather than a relation
+# between two program values are the dominant source of noise in this RQ5
+# comparison: with only a small, per-bug trace to infer from, Daikon happily
+# reports "always one of {these 2-3 strings I happened to see}" or "always
+# equals this exact number", and ANY single differing value in the
+# bug-triggering test trivially "falsifies" it -- with zero relation to the
+# actual bug. Confirmed directly: e.g. Cli_36 produced 111 FALSIFIED
+# invariants after excluding test-fixture ppts, and every single one was
+# this shape (`... one of { "age", "size" }`, `this.argName.toString ==
+# "SIZE"`, `this.startTime == 1790227646867L`, etc.) over genuine
+# production code, not test scaffolding.
+#
+# Relational invariants between two variables/expressions (`a == b`,
+# `a > b`, `!= null`, `== true`/`== false`) don't have this problem -- they
+# hold or fail based on the RELATIONSHIP, not on having observed every
+# possible concrete value, so they're not filtered here. Deliberately
+# excludes null/true/false comparisons from the literal-equality pattern
+# below since those are categorical (binary), not a numeric/string
+# coincidence.
+_ENUM_PATTERN = re.compile(r"\bone of \{")
+_DEGENERATE_PATTERN = re.compile(r"has only one value")
+_LITERAL_EQ_PATTERN = re.compile(
+    r'==\s*(-?\d+L?|"[^"]*")\s*(?:$|;|\s)|(-?\d+L?|"[^"]*")\s*=='
+)
+
+
+def is_overfit_prone_invariant(text: str) -> bool:
+    """True if this invariant asserts equality/membership against a
+    specific observed literal (enumeration or literal-equality) rather than
+    a relation between two program values -- see the module-level comment
+    for why these are excluded from the RQ5 comparison entirely."""
+    return bool(
+        _ENUM_PATTERN.search(text)
+        or _DEGENERATE_PATTERN.search(text)
+        or _LITERAL_EQ_PATTERN.search(text)
+    )
 
 
 def parse_daikon_invariants(text: str) -> dict[str, set[str]]:
@@ -69,12 +108,15 @@ def diff_invariants(
     before: dict[str, set[str]], after: dict[str, set[str]]
 ) -> list[tuple[str, str, str]]:
     """Returns (ppt, invariant, verdict) for every invariant proposed in
-    `before`. verdict is HELD if still present in `after` at the same ppt,
-    else FALSIFIED."""
+    `before` that isn't overfit-prone (see is_overfit_prone_invariant).
+    verdict is HELD if still present in `after` at the same ppt, else
+    FALSIFIED."""
     rows = []
     for ppt, invs in before.items():
         after_invs = after.get(ppt, set())
         for inv in invs:
+            if is_overfit_prone_invariant(inv):
+                continue
             verdict = "HELD" if inv in after_invs else "FALSIFIED"
             rows.append((ppt, inv, verdict))
     return rows
