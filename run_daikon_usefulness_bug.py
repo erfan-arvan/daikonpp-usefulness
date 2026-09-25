@@ -98,16 +98,47 @@ def checkout(project: str, version: str, work_dir: Path):
         )
 
 
-def compile_runner(cp_test: str, out_dir: Path) -> Path:
+def find_junit4_jar() -> str:
+    """Locates a JUnit 4 jar under the defects4j install, independent of
+    whatever JUnit version the target project's own `cp.test` classpath
+    pins.
+
+    DaikonTestRunner.java always uses JUnit 4's org.junit.runner.* APIs
+    (JUnitCore, Request, Filter, Description), regardless of which JUnit
+    version the project under test was originally built against. Older
+    Defects4J bug revisions (e.g. pre-migration Commons CLI) pin JUnit
+    3.8.2 only, with no JUnit 4 classes anywhere on `cp.test` -- compiling
+    DaikonTestRunner.java against that classpath alone fails outright with
+    "package org.junit.runner does not exist", for every single bug on
+    that lib version, confirmed via Cli-30..34.
+
+    JUnit 4's JUnitCore can run legacy junit.framework.TestCase classes
+    fine (it auto-wraps them via JUnit38ClassRunner), and defects4j's own
+    compile.tests step already puts a JUnit 3.8.2 jar and Ant's bundled
+    junit-4.12.jar on the same classpath together successfully -- so
+    adding a JUnit 4 jar here for our own runner's compile/run classpath
+    is safe and doesn't touch the project's own `defects4j compile` step.
+    """
+    d4j_bin = shutil.which("defects4j")
+    if not d4j_bin:
+        raise RuntimeError("defects4j not found on PATH")
+    d4j_home = Path(d4j_bin).resolve().parent.parent  # .../framework/bin/defects4j -> D4J_HOME
+    candidates = sorted(d4j_home.rglob("junit-4*.jar"))
+    if not candidates:
+        raise RuntimeError(f"no junit-4*.jar found under {d4j_home}")
+    return str(candidates[0])
+
+
+def compile_runner(cp_runner: str, out_dir: Path) -> Path:
     out_dir.mkdir(parents=True, exist_ok=True)
-    run(["javac", "-cp", cp_test, "-d", str(out_dir), str(RUNNER_SRC)])
+    run(["javac", "-cp", cp_runner, "-d", str(out_dir), str(RUNNER_SRC)])
     return out_dir
 
 
 def run_chicory(
     daikon_jar: str,
     runner_classes: Path,
-    cp_test: str,
+    cp_runner: str,
     pkg_pattern: str,
     omit_pattern: str,
     out_dtrace: Path,
@@ -116,7 +147,7 @@ def run_chicory(
 ):
     if not specs:
         raise ValueError("no test specs given to Chicory")
-    cp = f"{runner_classes}:{cp_test}:{daikon_jar}"
+    cp = f"{runner_classes}:{cp_runner}:{daikon_jar}"
     # Chicory's --dtrace-file silently produces NO output file (no error either)
     # when given an absolute path -- confirmed against a real daikon.jar build.
     # Always pass a bare relative filename, let it land in the cwd (work_dir),
@@ -277,7 +308,11 @@ def main():
     # of trace_a's data at all.
     specs_full_suite = list(all_classes)
 
-    runner_classes = compile_runner(cp_test, out_dir / "runner-classes")
+    junit4_jar = find_junit4_jar()
+    print(f"[INFO] junit4 jar (for DaikonTestRunner, independent of project's own JUnit version) = {junit4_jar}")
+    cp_runner = f"{cp_test}:{junit4_jar}"
+
+    runner_classes = compile_runner(cp_runner, out_dir / "runner-classes")
 
     trace_a = out_dir / "traceA.dtrace.gz"
     trace_full = out_dir / "traceFull.dtrace.gz"
@@ -286,14 +321,14 @@ def main():
     print(f">>> Chicory phase A (without triggering test): {args.project}-{args.bug_id}")
     print("=" * 60)
     run_chicory(
-        daikon_jar, runner_classes, cp_test, pkg_pattern, omit_pattern, trace_a, work_dir, specs_without_bug
+        daikon_jar, runner_classes, cp_runner, pkg_pattern, omit_pattern, trace_a, work_dir, specs_without_bug
     )
 
     print("=" * 60)
     print(f">>> Chicory phase B (full unmodified suite): {args.project}-{args.bug_id}")
     print("=" * 60)
     run_chicory(
-        daikon_jar, runner_classes, cp_test, pkg_pattern, omit_pattern, trace_full, work_dir, specs_full_suite
+        daikon_jar, runner_classes, cp_runner, pkg_pattern, omit_pattern, trace_full, work_dir, specs_full_suite
     )
 
     inv_a = out_dir / "invA.inv.gz"
