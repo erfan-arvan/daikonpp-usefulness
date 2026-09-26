@@ -91,10 +91,14 @@ def _cleanup_traces():
 
 
 def _handle_sigterm(signum, frame):
+    # Only the checkout (work_dir) is cleaned up here -- NOT the raw traces.
+    # A phase that already finished and was moved into out_dir before the
+    # timeout hit should survive so a retry can skip redoing it; see the
+    # SKIP checks in main() and _cleanup_traces()'s own call site (only on
+    # genuine success).
     if _work_dir_for_cleanup is not None:
         print(f"[INFO] caught SIGTERM -- cleaning up {_work_dir_for_cleanup} before exit", flush=True)
         shutil.rmtree(_work_dir_for_cleanup, ignore_errors=True)
-    _cleanup_traces()
     sys.exit(143)  # 128 + SIGTERM(15), the conventional exit code for this
 
 
@@ -366,25 +370,47 @@ def main():
 
         runner_classes = compile_runner(cp_runner, out_dir / "runner-classes")
 
-        print("=" * 60)
-        print(f">>> Chicory phase A (without triggering test): {args.project}-{args.bug_id}")
-        print("=" * 60)
-        run_chicory(
-            daikon_jar, runner_classes, cp_runner, pkg_pattern, omit_pattern, trace_a, work_dir, specs_without_bug
-        )
+        # Each of these four steps is skipped if its output already exists --
+        # a prior attempt at this exact bug may have completed one or more
+        # phases before being killed by a timeout (or crashing partway
+        # through a LATER phase). A trace/inv file only ever exists in
+        # out_dir once its producing step has fully finished (Chicory writes
+        # to a temp name in work_dir first, moving it here only on success;
+        # run_daikon's -o target is likewise only valid once it returns) --
+        # so reusing one here is safe, and for a large project (Closure's
+        # phases can each take an hour+) this can save most of a retry's
+        # runtime instead of redoing already-finished work from scratch.
+        if trace_a.exists():
+            print(f"[INFO] SKIP Chicory phase A -- {trace_a} already exists from a prior attempt")
+        else:
+            print("=" * 60)
+            print(f">>> Chicory phase A (without triggering test): {args.project}-{args.bug_id}")
+            print("=" * 60)
+            run_chicory(
+                daikon_jar, runner_classes, cp_runner, pkg_pattern, omit_pattern, trace_a, work_dir, specs_without_bug
+            )
 
-        print("=" * 60)
-        print(f">>> Chicory phase B (full unmodified suite): {args.project}-{args.bug_id}")
-        print("=" * 60)
-        run_chicory(
-            daikon_jar, runner_classes, cp_runner, pkg_pattern, omit_pattern, trace_full, work_dir, specs_full_suite
-        )
+        if trace_full.exists():
+            print(f"[INFO] SKIP Chicory phase B -- {trace_full} already exists from a prior attempt")
+        else:
+            print("=" * 60)
+            print(f">>> Chicory phase B (full unmodified suite): {args.project}-{args.bug_id}")
+            print("=" * 60)
+            run_chicory(
+                daikon_jar, runner_classes, cp_runner, pkg_pattern, omit_pattern, trace_full, work_dir, specs_full_suite
+            )
 
-        print(">>> Daikon on trace A alone")
-        run_daikon(daikon_jar, [trace_a], inv_a)
+        if inv_a.exists():
+            print(f"[INFO] SKIP Daikon on trace A -- {inv_a} already exists from a prior attempt")
+        else:
+            print(">>> Daikon on trace A alone")
+            run_daikon(daikon_jar, [trace_a], inv_a)
 
-        print(">>> Daikon on the full-suite trace alone (no merge with trace A)")
-        run_daikon(daikon_jar, [trace_full], inv_full)
+        if inv_full.exists():
+            print(f"[INFO] SKIP Daikon on the full-suite trace -- {inv_full} already exists from a prior attempt")
+        else:
+            print(">>> Daikon on the full-suite trace alone (no merge with trace A)")
+            run_daikon(daikon_jar, [trace_full], inv_full)
 
         text_a = print_invariants(daikon_jar, inv_a)
         text_ab = print_invariants(daikon_jar, inv_full)
@@ -410,9 +436,14 @@ def main():
         print(f">>> DONE {args.project}-{args.bug_id}: total={len(rows)} held={n_held} falsified={n_fals}")
         print(f"    outcomes -> {outcomes_path}")
         print("=" * 60)
+
+        # Only clean up the raw traces on a genuine success (outcomes_path
+        # written) -- on a crash/timeout, a phase that already finished
+        # should stay on disk so a retry can skip it (see the SKIP checks
+        # above), rather than being deleted and redone from scratch.
+        _cleanup_traces()
     finally:
         shutil.rmtree(work_dir, ignore_errors=True)
-        _cleanup_traces()
 
 
 if __name__ == "__main__":
