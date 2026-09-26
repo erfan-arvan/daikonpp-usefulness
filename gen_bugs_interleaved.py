@@ -47,7 +47,13 @@ def main():
     max_rank = max(len(ids) for ids in by_project.values())
 
     with open(out_path, "w", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        # lineterminator="\n": csv.writer's own default is "\r\n" (the CSV
+        # spec), which submit_daikon.sh's `sed`/bash parameter-expansion
+        # parsing doesn't strip -- every --bug value it passed downstream
+        # ended up with a literal trailing \r, causing every single task to
+        # fail with "no row for project=X bug='Y\r'" (confirmed: this is
+        # exactly what happened on the first real submission).
+        writer = csv.DictWriter(f, fieldnames=fieldnames, lineterminator="\n")
         writer.writeheader()
         n = 0
         for rank in range(max_rank):

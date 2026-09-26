@@ -67,8 +67,13 @@ command -v defects4j >/dev/null || { echo "ERROR: defects4j not on PATH"; exit 1
 BUGS_CSV="${BUGS_CSV:-$ROOT/bugs_last10.csv}"
 
 # Row (SLURM_ARRAY_TASK_ID + 2) of BUGS_CSV: +1 for 1-indexed sed, +1 more to
-# skip the header row.
-ROW=$(sed -n "$((SLURM_ARRAY_TASK_ID + 2))p" "$BUGS_CSV")
+# skip the header row. Strip any trailing \r unconditionally -- a
+# CRLF-terminated CSV (e.g. from Python's csv module, whose own default
+# lineterminator is "\r\n" per the CSV spec) leaves one on BUG_ID that this
+# parsing wouldn't otherwise catch, and --bug then fails to match anything
+# (confirmed: this is exactly what happened on the first real submission,
+# every single task failing with "no row for project=X bug='Y\r'").
+ROW=$(sed -n "$((SLURM_ARRAY_TASK_ID + 2))p" "$BUGS_CSV" | tr -d '\r')
 [[ -n "$ROW" ]] || { echo "ERROR: no row at index $SLURM_ARRAY_TASK_ID in $BUGS_CSV"; exit 1; }
 PROJECT="${ROW%%,*}"
 BUG_ID="${ROW#*,}"
