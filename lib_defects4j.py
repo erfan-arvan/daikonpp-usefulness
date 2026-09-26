@@ -13,10 +13,40 @@ import re
 import subprocess
 from pathlib import Path
 
+# Tracks whatever child run() currently has blocked on, so a caller's own
+# SIGTERM handler (e.g. run_daikon_usefulness_bug.py's) can kill it
+# explicitly before cleaning up its cwd. Without this, a signal that
+# interrupts subprocess.run()'s wait only unwinds the PYTHON stack (via
+# sys.exit() in that handler) -- the child process itself (e.g. a `java
+# daikon.Chicory` run mid-write of a multi-GB temp trace file into that same
+# cwd) is never told to stop, so it's orphaned: it keeps running, and keeps
+# writing into a directory whose entry the handler may already have deleted,
+# silently wasting disk space until SLURM eventually reaps the whole cgroup.
+_current_subprocess: subprocess.Popen | None = None
+
+
+def kill_current_subprocess():
+    """Called from a SIGTERM handler, before removing this subprocess's cwd,
+    to make sure nothing is still running (and thus still writing) there."""
+    global _current_subprocess
+    if _current_subprocess is not None and _current_subprocess.poll() is None:
+        print(f"[INFO] killing in-flight subprocess (pid={_current_subprocess.pid})", flush=True)
+        _current_subprocess.kill()
+        _current_subprocess.wait()
+
 
 def run(cmd, cwd=None, env=None, check=True):
+    global _current_subprocess
     print("+", " ".join(str(c) for c in cmd), flush=True)
-    return subprocess.run(cmd, cwd=cwd, env=env, check=check)
+    proc = subprocess.Popen(cmd, cwd=cwd, env=env)
+    _current_subprocess = proc
+    try:
+        returncode = proc.wait()
+    finally:
+        _current_subprocess = None
+    if check and returncode != 0:
+        raise subprocess.CalledProcessError(returncode, cmd)
+    return subprocess.CompletedProcess(cmd, returncode)
 
 
 def capture(cmd, cwd=None, env=None, timeout=300):

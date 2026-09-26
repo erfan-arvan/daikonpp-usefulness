@@ -57,6 +57,7 @@ from lib_defects4j import (  # noqa: E402
     d4j_env,
     derive_package_pattern,
     disable_test_method,  # noqa: F401  (unused here; kept for parity/reference)
+    kill_current_subprocess,
     list_test_classes,
     parse_triggering_tests,
     run,
@@ -91,11 +92,18 @@ def _cleanup_traces():
 
 
 def _handle_sigterm(signum, frame):
-    # Only the checkout (work_dir) is cleaned up here -- NOT the raw traces.
-    # A phase that already finished and was moved into out_dir before the
-    # timeout hit should survive so a retry can skip redoing it; see the
-    # SKIP checks in main() and _cleanup_traces()'s own call site (only on
+    # Kill whatever's actually still running FIRST. A SIGTERM only unwinds
+    # OUR Python stack (via sys.exit() below) -- the child process a run()
+    # call is blocked on (e.g. a `java daikon.Chicory` mid-write of a
+    # multi-GB temp trace into work_dir) is never itself told to stop, so
+    # without this it's orphaned: it keeps running and keeps writing into a
+    # directory whose entry we're about to delete, wasting invisible disk
+    # space until SLURM eventually reaps the whole cgroup. Only the checkout
+    # (work_dir) is removed here -- NOT the raw traces already moved into
+    # out_dir by a phase that finished cleanly before this timeout hit; see
+    # the SKIP checks in main() and _cleanup_traces()'s call site (only on
     # genuine success).
+    kill_current_subprocess()
     if _work_dir_for_cleanup is not None:
         print(f"[INFO] caught SIGTERM -- cleaning up {_work_dir_for_cleanup} before exit", flush=True)
         shutil.rmtree(_work_dir_for_cleanup, ignore_errors=True)
