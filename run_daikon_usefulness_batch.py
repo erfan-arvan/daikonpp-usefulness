@@ -25,6 +25,7 @@ from __future__ import annotations
 import argparse
 import csv
 import os
+import signal
 import subprocess
 import sys
 from datetime import datetime
@@ -47,6 +48,27 @@ def log(msg: str):
 def results_exist(project: str, bug_id: str) -> bool:
     out_dir = ROOT / "outputs_usefulness" / f"{project}_{bug_id}"
     return (out_dir / "daikon_outcomes.jsonl").exists()
+
+
+# Set to the currently-running bug subprocess, read by _handle_sigterm.
+# submit_daikon.sh's `timeout --signal=TERM ... 71h` sends SIGTERM only to
+# THIS process (its direct child), not to the grandchild bug subprocess --
+# without forwarding it, this driver just dies and the bug subprocess is
+# orphaned, left running with no chance to clean up after itself (see the
+# matching SIGTERM handler in run_daikon_usefulness_bug.py).
+_current_proc: subprocess.Popen | None = None
+
+
+def _handle_sigterm(signum, frame):
+    if _current_proc is not None and _current_proc.poll() is None:
+        print("[INFO] caught SIGTERM -- forwarding to current bug subprocess for cleanup", flush=True)
+        _current_proc.send_signal(signal.SIGTERM)
+        try:
+            _current_proc.wait(timeout=240)
+        except subprocess.TimeoutExpired:
+            print("[INFO] bug subprocess did not exit within 240s of SIGTERM -- killing it", flush=True)
+            _current_proc.kill()
+    sys.exit(143)
 
 
 def main():
@@ -73,6 +95,8 @@ def main():
             assert 0 <= shard_index < shard_count
         except (ValueError, AssertionError):
             sys.exit(f"ERROR: --shard must be I/N with 0 <= I < N, got {args.shard!r}")
+
+    signal.signal(signal.SIGTERM, _handle_sigterm)
 
     LOG_ROOT.mkdir(parents=True, exist_ok=True)
 
@@ -115,6 +139,7 @@ def main():
 
         log_file = LOG_ROOT / f"{project}_{bug_id}.log"
         with open(log_file, "w", buffering=1) as lf:
+            global _current_proc
             proc = subprocess.Popen(
                 [sys.executable, str(BUG_SCRIPT), project, bug_id],
                 stdout=subprocess.PIPE,
@@ -122,10 +147,12 @@ def main():
                 text=True,
                 bufsize=1,
             )
+            _current_proc = proc
             for line in proc.stdout:
                 print(line, end="")
                 lf.write(line)
             proc.wait()
+            _current_proc = None
 
         if proc.returncode == 0:
             log(f"SUCCESS: {project}-{bug_id}")

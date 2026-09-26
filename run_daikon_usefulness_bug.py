@@ -46,6 +46,7 @@ import argparse
 import os
 import re
 import shutil
+import signal
 import subprocess
 import sys
 from pathlib import Path
@@ -66,6 +67,22 @@ THIS_DIR = Path(__file__).resolve().parent
 RUNNER_SRC = THIS_DIR / "DaikonTestRunner.java"
 
 OMIT_PATTERN = r"junit\.|org\.junit\.|sun\.|java\.|com\.sun\.proxy"
+
+# Set right after work_dir is computed in main(), read by _handle_sigterm.
+# A SIGTERM (the soft-timeout signal submit_daikon.sh's `timeout` sends, or
+# one forwarded from run_daikon_usefulness_batch.py's own SIGTERM handler)
+# terminates a plain Python process immediately by default -- no exception is
+# raised, so the try/finally in main() never runs and the checkout (plus any
+# partial multi-GB trace file already written into it) is orphaned. Installing
+# an explicit handler here turns that into a clean, in-process cleanup instead.
+_work_dir_for_cleanup: Path | None = None
+
+
+def _handle_sigterm(signum, frame):
+    if _work_dir_for_cleanup is not None:
+        print(f"[INFO] caught SIGTERM -- cleaning up {_work_dir_for_cleanup} before exit", flush=True)
+        shutil.rmtree(_work_dir_for_cleanup, ignore_errors=True)
+    sys.exit(143)  # 128 + SIGTERM(15), the conventional exit code for this
 
 
 def build_full_omit_pattern(test_classes: list[str]) -> str:
@@ -243,6 +260,11 @@ def main():
     work_dir = root / "defects4j" / f"{args.project}-{version}_daikon"
     if work_dir.exists():
         shutil.rmtree(work_dir)
+
+    global _work_dir_for_cleanup
+    _work_dir_for_cleanup = work_dir
+    signal.signal(signal.SIGTERM, _handle_sigterm)
+
     checkout(args.project, version, work_dir)
 
     # Everything from here on (compile, both Chicory phases, Daikon
