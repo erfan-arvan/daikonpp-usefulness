@@ -43,6 +43,7 @@ Requires:
 from __future__ import annotations
 
 import argparse
+import gzip
 import os
 import re
 import shutil
@@ -68,6 +69,14 @@ THIS_DIR = Path(__file__).resolve().parent
 RUNNER_SRC = THIS_DIR / "DaikonTestRunner.java"
 
 OMIT_PATTERN = r"junit\.|org\.junit\.|sun\.|java\.|com\.sun\.proxy"
+
+# Confirmed too small: JacksonDatabind-111's Phase A trace hit a plain
+# java.lang.OutOfMemoryError at -Xmx4g running daikon.Daikon (the trace
+# itself was fine -- rerunning with more heap is the whole fix). Bumped for
+# every Chicory/Daikon invocation, not just JacksonDatabind, since any
+# project's trace can end up this size; override via DAIKON_JAVA_XMX if a
+# cluster's node memory can't fit this.
+JAVA_XMX = os.environ.get("DAIKON_JAVA_XMX", "12g")
 
 # Set right after work_dir is computed in main(), read by _handle_sigterm.
 # A SIGTERM (the soft-timeout signal submit_daikon.sh's `timeout` sends, or
@@ -130,6 +139,36 @@ def build_full_omit_pattern(test_classes: list[str]) -> str:
         return OMIT_PATTERN
     test_class_pattern = "|".join(re.escape(c) for c in test_classes)
     return f"{OMIT_PATTERN}|{test_class_pattern}"
+
+
+def is_valid_gzip(path: Path) -> bool:
+    """True if `path` is a complete, uncorrupted gzip stream.
+
+    The "exists == fully completed" invariant Chicory/run_daikon's atomic
+    writes are supposed to guarantee doesn't hold for trace/inv files left
+    over from before that atomic-write logic existed -- confirmed directly:
+    several bugs' traceA.dtrace.gz files decompressed into garbage/repeated
+    bytes ("Bad modbit ... 6t6t6t6t...", "Mismatch ... context.cur8(uuuu...")
+    that Daikon only detects when it actually tries to read them, at which
+    point the SKIP-if-exists resume logic had already trusted the file and
+    skipped regenerating it -- forever repeating the identical failure on
+    every retry. Reading the whole stream through to EOF forces gzip's own
+    CRC32/size trailer check, which reliably catches a truncated/corrupted
+    write; raises here on any mismatch, treated as "not valid" by the caller.
+    """
+    try:
+        with gzip.open(path, "rb") as f:
+            while f.read(1 << 20):
+                pass
+        return True
+    except (OSError, EOFError):
+        # EOFError (truncated stream, missing end-of-stream marker) is NOT an
+        # OSError subclass in Python's gzip module -- confirmed directly:
+        # a gzip file cut off mid-stream raises a bare EOFError, which a
+        # plain `except OSError` silently misses, defeating the whole point
+        # of this check. BadGzipFile (bad CRC/size in the trailer) IS an
+        # OSError subclass and was already covered.
+        return False
 
 
 def checkout(project: str, version: str, work_dir: Path):
@@ -197,7 +236,7 @@ def run_chicory(
     tmp_name = f".chicory-{out_dtrace.name}"
     cmd = [
         "java",
-        "-Xmx4g",
+        f"-Xmx{JAVA_XMX}",
         "-cp",
         cp,
         "daikon.Chicory",
@@ -231,11 +270,26 @@ def run_daikon(daikon_jar: str, dtrace_files: list[Path], out_inv: Path):
     tmp_out.unlink(missing_ok=True)
     cmd = [
         "java",
-        "-Xmx4g",
+        f"-Xmx{JAVA_XMX}",
         "-cp",
         daikon_jar,
         "daikon.Daikon",
         "--no_show_progress",
+        # Disables Daikon's implication/splitter generation entirely
+        # (daikon.split.PptSplitter.add_implications_pair). Confirmed root
+        # cause of a real crash class: "RuntimeException: found eq_inv ...
+        # but can't find slice" inside that method, hit on Math-104/105's
+        # BigMatrixImpl.isSquare boolean-return EXIT split. This isn't
+        # specific to that one class -- it's a general Daikon bug in
+        # reconciling equality invariants across an implicit true/false EXIT
+        # split, so any project with a boolean-returning method can trigger
+        # it. Applied globally (not just for Math) since it's a no-op for
+        # any run that never hits this path, and implication invariants
+        # aren't part of what this RQ5 comparison's ppt/invariant diffing
+        # (daikon_diff_invariants.py) is measuring in the first place --
+        # Oca has no equivalent invariant category to compare against.
+        "--config_option",
+        "daikon.split.PptSplitter.dkconfig_disable_splitting=true",
         "-o",
         str(tmp_out),
         *[str(p) for p in dtrace_files],
@@ -399,6 +453,10 @@ def main():
         # so reusing one here is safe, and for a large project (Closure's
         # phases can each take an hour+) this can save most of a retry's
         # runtime instead of redoing already-finished work from scratch.
+        if trace_a.exists() and not is_valid_gzip(trace_a):
+            print(f"[WARN] {trace_a} exists but is not a valid gzip stream (corrupted/truncated "
+                  "leftover from a prior attempt) -- deleting so Chicory phase A reruns")
+            trace_a.unlink()
         if trace_a.exists():
             print(f"[INFO] SKIP Chicory phase A -- {trace_a} already exists from a prior attempt")
         else:
@@ -409,6 +467,10 @@ def main():
                 daikon_jar, runner_classes, cp_runner, pkg_pattern, omit_pattern, trace_a, work_dir, specs_without_bug
             )
 
+        if trace_full.exists() and not is_valid_gzip(trace_full):
+            print(f"[WARN] {trace_full} exists but is not a valid gzip stream (corrupted/truncated "
+                  "leftover from a prior attempt) -- deleting so Chicory phase B reruns")
+            trace_full.unlink()
         if trace_full.exists():
             print(f"[INFO] SKIP Chicory phase B -- {trace_full} already exists from a prior attempt")
         else:
@@ -419,12 +481,20 @@ def main():
                 daikon_jar, runner_classes, cp_runner, pkg_pattern, omit_pattern, trace_full, work_dir, specs_full_suite
             )
 
+        if inv_a.exists() and not is_valid_gzip(inv_a):
+            print(f"[WARN] {inv_a} exists but is not a valid gzip stream (corrupted/truncated "
+                  "leftover from a prior attempt) -- deleting so Daikon reruns on trace A")
+            inv_a.unlink()
         if inv_a.exists():
             print(f"[INFO] SKIP Daikon on trace A -- {inv_a} already exists from a prior attempt")
         else:
             print(">>> Daikon on trace A alone")
             run_daikon(daikon_jar, [trace_a], inv_a)
 
+        if inv_full.exists() and not is_valid_gzip(inv_full):
+            print(f"[WARN] {inv_full} exists but is not a valid gzip stream (corrupted/truncated "
+                  "leftover from a prior attempt) -- deleting so Daikon reruns on the full-suite trace")
+            inv_full.unlink()
         if inv_full.exists():
             print(f"[INFO] SKIP Daikon on the full-suite trace -- {inv_full} already exists from a prior attempt")
         else:
