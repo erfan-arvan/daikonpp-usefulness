@@ -81,8 +81,14 @@ def main():
     ap.add_argument("csv_file")
     ap.add_argument("--skip-existing", action="store_true")
     ap.add_argument("--project", default=None, help="restrict to this project's rows only")
+    ap.add_argument("--bug", default=None, help="restrict to exactly this bug_id (requires --project)")
     ap.add_argument("--shard", default=None, help="I/N: run only the I-th of N contiguous slices")
     args = ap.parse_args()
+
+    if args.bug and not args.project:
+        sys.exit("ERROR: --bug requires --project")
+    if args.bug and args.shard:
+        sys.exit("ERROR: --bug and --shard are mutually exclusive")
 
     if not os.environ.get("DAIKON_JAR"):
         sys.exit("ERROR: DAIKON_JAR must be set before running this batch driver")
@@ -114,6 +120,11 @@ def main():
         if not rows:
             sys.exit(f"ERROR: no rows for project={args.project!r} in {csv_path}")
 
+    if args.bug:
+        rows = [r for r in rows if r["bug_id"].strip() == args.bug]
+        if not rows:
+            sys.exit(f"ERROR: no row for project={args.project!r} bug={args.bug!r} in {csv_path}")
+
     if shard_count:
         total = len(rows)
         chunk = -(-total // shard_count)  # ceil division
@@ -125,6 +136,7 @@ def main():
 
     log(f"===== STARTING DAIKON BATCH RUN ({len(rows)} bugs"
         f"{f', project={args.project}' if args.project else ''}"
+        f"{f', bug={args.bug}' if args.bug else ''}"
         f"{f', shard={args.shard}' if args.shard else ''}) =====")
 
     for i, row in enumerate(rows, 1):
