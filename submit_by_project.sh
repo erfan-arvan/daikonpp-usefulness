@@ -67,6 +67,16 @@ export OPENAI_API_KEY="$(xargs < "$OPENAI_KEY_FILE")"
 # regardless of this setting.
 export DP_OPENAI_MODEL=gpt-4.1-mini
 
+# The autofilter's plain default (10 modify passes + 20 restore-only passes)
+# was confirmed too small for Closure specifically (still finding new files
+# needing restoration at pass 30/30). Widen it globally rather than gating
+# on PROJECT below -- that gate only fires when this script's own per-project
+# shard logic runs, so any other submission path (e.g. a resubmission CSV
+# run through submit.sh) silently fell back to the plain default. A project
+# whose autofilter converges well within 10+20 just stops early either way.
+export DP_AUTOFILTER_MAX_MODIFY_PASSES=150
+export DP_AUTOFILTER_MAX_EXTRA_PASSES=150
+
 export ROOT="$PWD"
 export DPP_DIR="$ROOT/daikonplusplus"
 
@@ -123,19 +133,6 @@ PROJECT="${ROW%%,*}"
 REST="${ROW#*,}"
 SHARD="${REST%%,*}"
 NUM_SHARDS="${REST#*,}"
-
-# Closure's LLM-generated invariants include a large volume of JsonML/Node API
-# hallucinations (LLM confuses Closure Compiler's JsonML class with its Node
-# class) spread across 150+ distinct source files. The autofilter's default
-# budget (10 modify passes + 20 restore-only passes) isn't nearly enough to
-# work through that many broken files -- confirmed empirically: a real run
-# was still discovering brand-new files needing restoration at pass 30/30.
-# Widen both budgets for Closure only; every other project keeps daikonplusplus's
-# defaults (DpConfig.autofilterMaxModifyPasses/autofilterMaxExtraPasses).
-if [[ "$PROJECT" == "Closure" ]]; then
-  export DP_AUTOFILTER_MAX_MODIFY_PASSES=150
-  export DP_AUTOFILTER_MAX_EXTRA_PASSES=150
-fi
 
 if [[ "$NUM_SHARDS" -gt 1 ]]; then
   echo ">>> Running usefulness experiment for project=$PROJECT shard=$SHARD/$NUM_SHARDS (sequential batch)"

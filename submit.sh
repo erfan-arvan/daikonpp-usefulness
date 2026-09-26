@@ -57,6 +57,16 @@ export OPENAI_API_KEY="$(xargs < "$OPENAI_KEY_FILE")"
 # regardless of this setting.
 export DP_OPENAI_MODEL=gpt-4.1-mini
 
+# The autofilter's plain default (10 modify passes + 20 restore-only passes)
+# was confirmed too small for Closure specifically (still finding new files
+# needing restoration at pass 30/30), but this is a per-submission env var,
+# not something DpConfig can turn on only for Closure at runtime -- and this
+# script has no per-project branch to gate it on. Widen it globally instead;
+# a project whose autofilter converges well within the plain 10+20 budget
+# just stops early and never notices the larger ceiling.
+export DP_AUTOFILTER_MAX_MODIFY_PASSES=150
+export DP_AUTOFILTER_MAX_EXTRA_PASSES=150
+
 export ROOT="$PWD"
 export DPP_DIR="$ROOT/daikonplusplus"
 
