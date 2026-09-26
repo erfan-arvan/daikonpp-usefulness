@@ -50,6 +50,7 @@ import shutil
 import signal
 import subprocess
 import sys
+import zlib
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -161,13 +162,18 @@ def is_valid_gzip(path: Path) -> bool:
             while f.read(1 << 20):
                 pass
         return True
-    except (OSError, EOFError):
+    except (OSError, EOFError, zlib.error):
         # EOFError (truncated stream, missing end-of-stream marker) is NOT an
         # OSError subclass in Python's gzip module -- confirmed directly:
         # a gzip file cut off mid-stream raises a bare EOFError, which a
         # plain `except OSError` silently misses, defeating the whole point
         # of this check. BadGzipFile (bad CRC/size in the trailer) IS an
-        # OSError subclass and was already covered.
+        # OSError subclass and was already covered. zlib.error (corrupted
+        # DEFLATE data, e.g. "invalid code lengths set") is neither --
+        # confirmed directly: Collections-27's corrupted trace raised a bare
+        # zlib.error that an `except (OSError, EOFError)` alone let through
+        # uncaught, crashing this whole script instead of correctly
+        # detecting the corruption.
         return False
 
 
@@ -288,8 +294,17 @@ def run_daikon(daikon_jar: str, dtrace_files: list[Path], out_inv: Path):
         # aren't part of what this RQ5 comparison's ppt/invariant diffing
         # (daikon_diff_invariants.py) is measuring in the first place --
         # Oca has no equivalent invariant category to compare against.
+        #
+        # NOTE the field name here has NO "dkconfig_" prefix: Daikon's
+        # Configuration.apply() splits this string at the LAST dot and
+        # prepends "dkconfig_" itself when looking up the field (see
+        # daikon.config.Configuration.PREFIX) -- passing the prefix here too
+        # doubles it into "dkconfig_dkconfig_disable_splitting", which
+        # doesn't exist. Confirmed directly: the first version of this fix
+        # (with the prefix included) failed every single run with "Unknown
+        # configuration option daikon.split.PptSplitter.dkconfig_disable_..."
         "--config_option",
-        "daikon.split.PptSplitter.dkconfig_disable_splitting=true",
+        "daikon.split.PptSplitter.disable_splitting=true",
         "-o",
         str(tmp_out),
         *[str(p) for p in dtrace_files],
