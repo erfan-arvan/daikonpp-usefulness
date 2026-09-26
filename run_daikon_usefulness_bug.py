@@ -245,127 +245,137 @@ def main():
         shutil.rmtree(work_dir)
     checkout(args.project, version, work_dir)
 
-    run(["defects4j", "compile"], cwd=work_dir, env=d4j_subprocess_env)
+    # Everything from here on (compile, both Chicory phases, Daikon
+    # inference) writes into work_dir -- including, for a large project's
+    # full-suite trace, tens of GB of temp .chicory-*.dtrace.gz data before
+    # it's moved out to out_dir on success. Without this try/finally, ANY
+    # exception here (a disk-quota error, a compile failure, a killed job)
+    # skipped the cleanup below entirely and left the checkout PLUS that
+    # partial multi-GB trace file orphaned in defects4j/ forever -- exactly
+    # what silently grew that directory to 1.3TB over repeated failed/killed
+    # runs across this experiment's lifetime.
+    try:
+        run(["defects4j", "compile"], cwd=work_dir, env=d4j_subprocess_env)
 
-    main_src = work_dir / capture(
-        ["defects4j", "export", "-p", "dir.src.classes"], cwd=work_dir, env=d4j_subprocess_env
-    ).strip()
-    bin_tests = work_dir / capture(
-        ["defects4j", "export", "-p", "dir.bin.tests"], cwd=work_dir, env=d4j_subprocess_env
-    ).strip()
-    cp_test = capture(
-        ["defects4j", "export", "-p", "cp.test"], cwd=work_dir, env=d4j_subprocess_env
-    ).strip()
+        main_src = work_dir / capture(
+            ["defects4j", "export", "-p", "dir.src.classes"], cwd=work_dir, env=d4j_subprocess_env
+        ).strip()
+        bin_tests = work_dir / capture(
+            ["defects4j", "export", "-p", "dir.bin.tests"], cwd=work_dir, env=d4j_subprocess_env
+        ).strip()
+        cp_test = capture(
+            ["defects4j", "export", "-p", "cp.test"], cwd=work_dir, env=d4j_subprocess_env
+        ).strip()
 
-    pkg_pattern = args.pkg_pattern or derive_package_pattern(str(main_src))
-    print(f"[INFO] ppt-select-pattern = {pkg_pattern}")
+        pkg_pattern = args.pkg_pattern or derive_package_pattern(str(main_src))
+        print(f"[INFO] ppt-select-pattern = {pkg_pattern}")
 
-    info = capture(
-        ["defects4j", "info", "-p", args.project, "-b", args.bug_id], env=d4j_subprocess_env
-    )
-    triggering = parse_triggering_tests(info)
-    if not triggering:
-        sys.exit(
-            f"ERROR: no triggering tests found for {args.project}-{args.bug_id}; "
-            "cannot run the usefulness comparison (nothing to hold out / replay)"
+        info = capture(
+            ["defects4j", "info", "-p", args.project, "-b", args.bug_id], env=d4j_subprocess_env
         )
-    print("[INFO] triggering tests:")
-    for cls, meth in triggering:
-        print(f"    {cls}::{meth}")
+        triggering = parse_triggering_tests(info)
+        if not triggering:
+            sys.exit(
+                f"ERROR: no triggering tests found for {args.project}-{args.bug_id}; "
+                "cannot run the usefulness comparison (nothing to hold out / replay)"
+            )
+        print("[INFO] triggering tests:")
+        for cls, meth in triggering:
+            print(f"    {cls}::{meth}")
 
-    trig_by_class: dict[str, list[str]] = {}
-    for cls, meth in triggering:
-        trig_by_class.setdefault(cls, []).append(meth)
+        trig_by_class: dict[str, list[str]] = {}
+        for cls, meth in triggering:
+            trig_by_class.setdefault(cls, []).append(meth)
 
-    all_classes = list_test_classes(str(bin_tests))
-    if not all_classes:
-        sys.exit(f"ERROR: no compiled test classes found under {bin_tests}")
+        all_classes = list_test_classes(str(bin_tests))
+        if not all_classes:
+            sys.exit(f"ERROR: no compiled test classes found under {bin_tests}")
 
-    omit_pattern = build_full_omit_pattern(all_classes)
-    print(f"[INFO] ppt-omit-pattern (incl. {len(all_classes)} test classes) = {omit_pattern}")
+        omit_pattern = build_full_omit_pattern(all_classes)
+        print(f"[INFO] ppt-omit-pattern (incl. {len(all_classes)} test classes) = {omit_pattern}")
 
-    # Phase A specs: every test class, with triggering methods excluded from
-    # whichever class(es) contain them.
-    specs_without_bug = []
-    for cls in all_classes:
-        if cls in trig_by_class:
-            excl = ",".join(f"!{m}" for m in trig_by_class[cls])
-            specs_without_bug.append(f"{cls}::{excl}")
-        else:
-            specs_without_bug.append(cls)
+        # Phase A specs: every test class, with triggering methods excluded from
+        # whichever class(es) contain them.
+        specs_without_bug = []
+        for cls in all_classes:
+            if cls in trig_by_class:
+                excl = ",".join(f"!{m}" for m in trig_by_class[cls])
+                specs_without_bug.append(f"{cls}::{excl}")
+            else:
+                specs_without_bug.append(cls)
 
-    # Phase B specs: the FULL unmodified test suite (every class, nothing
-    # excluded, including the triggering test) -- run as ONE natural
-    # execution, not the triggering test in isolation. Running the
-    # triggering test alone in its own JVM (the old design) and then
-    # merging that isolated trace with trace_a at the Daikon level
-    # confounds "the bug's actual effect" with "artifacts of running this
-    # one test alone" (different static-init order, different JVM warm-up
-    # state, different execution context than it would ever naturally have
-    # as part of the real suite). Running the whole suite together instead
-    # gives the triggering test its normal execution context, and Daikon
-    # infers invFull directly from that single trace -- no merge, no reuse
-    # of trace_a's data at all.
-    specs_full_suite = list(all_classes)
+        # Phase B specs: the FULL unmodified test suite (every class, nothing
+        # excluded, including the triggering test) -- run as ONE natural
+        # execution, not the triggering test in isolation. Running the
+        # triggering test alone in its own JVM (the old design) and then
+        # merging that isolated trace with trace_a at the Daikon level
+        # confounds "the bug's actual effect" with "artifacts of running this
+        # one test alone" (different static-init order, different JVM warm-up
+        # state, different execution context than it would ever naturally have
+        # as part of the real suite). Running the whole suite together instead
+        # gives the triggering test its normal execution context, and Daikon
+        # infers invFull directly from that single trace -- no merge, no reuse
+        # of trace_a's data at all.
+        specs_full_suite = list(all_classes)
 
-    junit4_jar = find_junit4_jar()
-    print(f"[INFO] junit4 jar (for DaikonTestRunner, independent of project's own JUnit version) = {junit4_jar}")
-    cp_runner = f"{cp_test}:{junit4_jar}"
+        junit4_jar = find_junit4_jar()
+        print(f"[INFO] junit4 jar (for DaikonTestRunner, independent of project's own JUnit version) = {junit4_jar}")
+        cp_runner = f"{cp_test}:{junit4_jar}"
 
-    runner_classes = compile_runner(cp_runner, out_dir / "runner-classes")
+        runner_classes = compile_runner(cp_runner, out_dir / "runner-classes")
 
-    trace_a = out_dir / "traceA.dtrace.gz"
-    trace_full = out_dir / "traceFull.dtrace.gz"
+        trace_a = out_dir / "traceA.dtrace.gz"
+        trace_full = out_dir / "traceFull.dtrace.gz"
 
-    print("=" * 60)
-    print(f">>> Chicory phase A (without triggering test): {args.project}-{args.bug_id}")
-    print("=" * 60)
-    run_chicory(
-        daikon_jar, runner_classes, cp_runner, pkg_pattern, omit_pattern, trace_a, work_dir, specs_without_bug
-    )
+        print("=" * 60)
+        print(f">>> Chicory phase A (without triggering test): {args.project}-{args.bug_id}")
+        print("=" * 60)
+        run_chicory(
+            daikon_jar, runner_classes, cp_runner, pkg_pattern, omit_pattern, trace_a, work_dir, specs_without_bug
+        )
 
-    print("=" * 60)
-    print(f">>> Chicory phase B (full unmodified suite): {args.project}-{args.bug_id}")
-    print("=" * 60)
-    run_chicory(
-        daikon_jar, runner_classes, cp_runner, pkg_pattern, omit_pattern, trace_full, work_dir, specs_full_suite
-    )
+        print("=" * 60)
+        print(f">>> Chicory phase B (full unmodified suite): {args.project}-{args.bug_id}")
+        print("=" * 60)
+        run_chicory(
+            daikon_jar, runner_classes, cp_runner, pkg_pattern, omit_pattern, trace_full, work_dir, specs_full_suite
+        )
 
-    inv_a = out_dir / "invA.inv.gz"
-    inv_full = out_dir / "invFull.inv.gz"
+        inv_a = out_dir / "invA.inv.gz"
+        inv_full = out_dir / "invFull.inv.gz"
 
-    print(">>> Daikon on trace A alone")
-    run_daikon(daikon_jar, [trace_a], inv_a)
+        print(">>> Daikon on trace A alone")
+        run_daikon(daikon_jar, [trace_a], inv_a)
 
-    print(">>> Daikon on the full-suite trace alone (no merge with trace A)")
-    run_daikon(daikon_jar, [trace_full], inv_full)
+        print(">>> Daikon on the full-suite trace alone (no merge with trace A)")
+        run_daikon(daikon_jar, [trace_full], inv_full)
 
-    text_a = print_invariants(daikon_jar, inv_a)
-    text_ab = print_invariants(daikon_jar, inv_full)
-    (out_dir / "invariantsA.txt").write_text(text_a)
-    (out_dir / "invariantsFull.txt").write_text(text_ab)
+        text_a = print_invariants(daikon_jar, inv_a)
+        text_ab = print_invariants(daikon_jar, inv_full)
+        (out_dir / "invariantsA.txt").write_text(text_a)
+        (out_dir / "invariantsFull.txt").write_text(text_ab)
 
-    before = parse_daikon_invariants(text_a)
-    after = parse_daikon_invariants(text_ab)
-    from daikon_diff_invariants import diff_invariants
+        before = parse_daikon_invariants(text_a)
+        after = parse_daikon_invariants(text_ab)
+        from daikon_diff_invariants import diff_invariants
 
-    rows = diff_invariants(before, after)
+        rows = diff_invariants(before, after)
 
-    outcomes_path = out_dir / "daikon_outcomes.jsonl"
-    import json
+        outcomes_path = out_dir / "daikon_outcomes.jsonl"
+        import json
 
-    with open(outcomes_path, "w") as f:
-        for ppt, inv, verdict in rows:
-            f.write(json.dumps({"ppt": ppt, "invariant": inv, "verdict": verdict}) + "\n")
+        with open(outcomes_path, "w") as f:
+            for ppt, inv, verdict in rows:
+                f.write(json.dumps({"ppt": ppt, "invariant": inv, "verdict": verdict}) + "\n")
 
-    n_held = sum(1 for _, _, v in rows if v == "HELD")
-    n_fals = sum(1 for _, _, v in rows if v == "FALSIFIED")
-    print("=" * 60)
-    print(f">>> DONE {args.project}-{args.bug_id}: total={len(rows)} held={n_held} falsified={n_fals}")
-    print(f"    outcomes -> {outcomes_path}")
-    print("=" * 60)
-
-    shutil.rmtree(work_dir, ignore_errors=True)
+        n_held = sum(1 for _, _, v in rows if v == "HELD")
+        n_fals = sum(1 for _, _, v in rows if v == "FALSIFIED")
+        print("=" * 60)
+        print(f">>> DONE {args.project}-{args.bug_id}: total={len(rows)} held={n_held} falsified={n_fals}")
+        print(f"    outcomes -> {outcomes_path}")
+        print("=" * 60)
+    finally:
+        shutil.rmtree(work_dir, ignore_errors=True)
 
 
 if __name__ == "__main__":
