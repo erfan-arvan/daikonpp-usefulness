@@ -219,6 +219,16 @@ def run_chicory(
 
 
 def run_daikon(daikon_jar: str, dtrace_files: list[Path], out_inv: Path):
+    # Unlike Chicory (which writes to a temp name in work_dir and only moves
+    # the result into out_dir on success), Daikon's -o writes DIRECTLY to the
+    # final path -- if this process crashes or is killed mid-write, a
+    # partial/corrupt .inv.gz would be left at exactly the path main()'s
+    # skip-if-exists check tests, causing the next attempt to wrongly reuse
+    # a broken file instead of redoing this step. Writing to a temp name and
+    # renaming only after run() returns (i.e. only on a clean exit) gives
+    # this the same "exists == fully completed" guarantee Chicory already has.
+    tmp_out = out_inv.with_name(out_inv.name + ".tmp")
+    tmp_out.unlink(missing_ok=True)
     cmd = [
         "java",
         "-Xmx4g",
@@ -227,10 +237,11 @@ def run_daikon(daikon_jar: str, dtrace_files: list[Path], out_inv: Path):
         "daikon.Daikon",
         "--no_show_progress",
         "-o",
-        str(out_inv),
+        str(tmp_out),
         *[str(p) for p in dtrace_files],
     ]
     run(cmd)
+    tmp_out.rename(out_inv)
 
 
 def print_invariants(daikon_jar: str, inv_file: Path) -> str:
