@@ -77,11 +77,24 @@ OMIT_PATTERN = r"junit\.|org\.junit\.|sun\.|java\.|com\.sun\.proxy"
 # an explicit handler here turns that into a clean, in-process cleanup instead.
 _work_dir_for_cleanup: Path | None = None
 
+# The raw dtrace/inv files are only ever intermediate data -- once
+# invariantsA.txt/invariantsFull.txt/daikon_outcomes.jsonl exist (or the run
+# never got that far), nothing downstream reads them again. Set right after
+# out_dir is known in main(), before anything can fail, so cleanup always has
+# a fixed, correct list of paths to remove regardless of which phase crashed.
+_trace_files_for_cleanup: list[Path] = []
+
+
+def _cleanup_traces():
+    for p in _trace_files_for_cleanup:
+        p.unlink(missing_ok=True)
+
 
 def _handle_sigterm(signum, frame):
     if _work_dir_for_cleanup is not None:
         print(f"[INFO] caught SIGTERM -- cleaning up {_work_dir_for_cleanup} before exit", flush=True)
         shutil.rmtree(_work_dir_for_cleanup, ignore_errors=True)
+    _cleanup_traces()
     sys.exit(143)  # 128 + SIGTERM(15), the conventional exit code for this
 
 
@@ -247,6 +260,13 @@ def main():
     )
     out_dir.mkdir(parents=True, exist_ok=True)
 
+    trace_a = out_dir / "traceA.dtrace.gz"
+    trace_full = out_dir / "traceFull.dtrace.gz"
+    inv_a = out_dir / "invA.inv.gz"
+    inv_full = out_dir / "invFull.inv.gz"
+    global _trace_files_for_cleanup
+    _trace_files_for_cleanup = [trace_a, trace_full, inv_a, inv_full]
+
     # Defects4J's own install docs say v2.x requires Java 8, which may differ
     # from the JDK daikon.jar was built/needs to run under on this cluster's
     # `module load`. Set D4J_JAVA_HOME to pin the JDK used for every
@@ -346,9 +366,6 @@ def main():
 
         runner_classes = compile_runner(cp_runner, out_dir / "runner-classes")
 
-        trace_a = out_dir / "traceA.dtrace.gz"
-        trace_full = out_dir / "traceFull.dtrace.gz"
-
         print("=" * 60)
         print(f">>> Chicory phase A (without triggering test): {args.project}-{args.bug_id}")
         print("=" * 60)
@@ -362,9 +379,6 @@ def main():
         run_chicory(
             daikon_jar, runner_classes, cp_runner, pkg_pattern, omit_pattern, trace_full, work_dir, specs_full_suite
         )
-
-        inv_a = out_dir / "invA.inv.gz"
-        inv_full = out_dir / "invFull.inv.gz"
 
         print(">>> Daikon on trace A alone")
         run_daikon(daikon_jar, [trace_a], inv_a)
@@ -398,6 +412,7 @@ def main():
         print("=" * 60)
     finally:
         shutil.rmtree(work_dir, ignore_errors=True)
+        _cleanup_traces()
 
 
 if __name__ == "__main__":
