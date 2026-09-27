@@ -216,6 +216,45 @@ _METHOD_PATTERN_TEMPLATE = (
 )
 
 
+def _matching_brace(text: str, open_idx: int) -> int:
+    """Index of the `}` closing the `{` at open_idx, ignoring braces inside
+    string/char literals and comments. Counting raw characters (the earlier
+    version) broke on Closure's CodePrinterTest, whose test bodies are full
+    of JavaScript strings like "function f() {": the walk overshot the
+    method, commented out the rest of the file, and javac failed with
+    "reached end of file while parsing" (Closure-173)."""
+    depth = 0
+    i, n = open_idx, len(text)
+    while i < n:
+        c = text[i]
+        if text.startswith('"""', i):  # text block
+            j = text.find('"""', i + 3)
+            i = n if j < 0 else j + 3
+            continue
+        if c == '"' or c == "'":
+            i += 1
+            while i < n and text[i] != c and text[i] != "\n":
+                i += 2 if text[i] == "\\" else 1
+            i += 1
+            continue
+        if text.startswith("//", i):
+            j = text.find("\n", i)
+            i = n if j < 0 else j + 1
+            continue
+        if text.startswith("/*", i):
+            j = text.find("*/", i + 2)
+            i = n if j < 0 else j + 2
+            continue
+        if c == "{":
+            depth += 1
+        elif c == "}":
+            depth -= 1
+            if depth == 0:
+                return i
+        i += 1
+    raise ValueError(f"no matching '}}' for '{{' at offset {open_idx}")
+
+
 def disable_test_method(file_path: str, method_name: str) -> bool:
     """Comment out a named test method (annotations, signature, and body) in
     a Java source file, in place. Returns True if a method was found and
@@ -235,17 +274,7 @@ def disable_test_method(file_path: str, method_name: str) -> bool:
 
     start = m.start()
     brace_start = text.index("{", m.end() - 1)
-    depth = 0
-    i = brace_start
-    while i < len(text):
-        if text[i] == "{":
-            depth += 1
-        elif text[i] == "}":
-            depth -= 1
-            if depth == 0:
-                break
-        i += 1
-    end = i + 1
+    end = _matching_brace(text, brace_start) + 1
 
     method_text = text[start:end]
     commented = "\n".join(
