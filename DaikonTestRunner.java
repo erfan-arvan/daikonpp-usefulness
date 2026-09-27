@@ -5,13 +5,16 @@ import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
+import java.util.Enumeration;
 import junit.framework.TestCase;
+import junit.framework.TestFailure;
 import junit.framework.TestResult;
 import org.junit.runner.Description;
 import org.junit.runner.JUnitCore;
 import org.junit.runner.Request;
 import org.junit.runner.Result;
 import org.junit.runner.manipulation.Filter;
+import org.junit.runner.notification.Failure;
 
 /**
  * JUnit runner used to drive Daikon's Chicory front end over a chosen subset of tests, so we can
@@ -59,6 +62,15 @@ public class DaikonTestRunner {
     return TestCase.class.isAssignableFrom(cls);
   }
 
+  /** Prints one line per failing test, so a run log shows WHY tests fail, not just how many. */
+  private static void reportFailure(String test, Throwable t) {
+    String msg = t == null ? "?" : t.toString();
+    int nl = msg.indexOf('\n');
+    if (nl >= 0) msg = msg.substring(0, nl);
+    if (msg.length() > 300) msg = msg.substring(0, 300) + "...";
+    System.out.println("[DaikonTestRunner] FAIL " + test + ": " + msg);
+  }
+
   /** All public no-arg {@code testXxx()} methods declared anywhere in the class hierarchy. */
   private static List<String> junit3TestMethodNames(Class<?> cls) {
     List<String> names = new ArrayList<>();
@@ -101,6 +113,12 @@ public class DaikonTestRunner {
         tc.run(result);
         total++;
         if (!result.wasSuccessful()) failures++;
+        for (Enumeration<TestFailure> e = result.errors(); e.hasMoreElements(); ) {
+          reportFailure(cls.getName() + "::" + m, e.nextElement().thrownException());
+        }
+        for (Enumeration<TestFailure> e = result.failures(); e.hasMoreElements(); ) {
+          reportFailure(cls.getName() + "::" + m, e.nextElement().thrownException());
+        }
       } catch (Throwable t) {
         System.err.println("[DaikonTestRunner] error running JUnit3 " + cls.getName() + "::" + m + ": " + t);
         total++;
@@ -163,11 +181,23 @@ public class DaikonTestRunner {
         Result r = core.run(req);
         total += r.getRunCount();
         failures += r.getFailureCount();
+        for (Failure f : r.getFailures()) {
+          Description d = f.getDescription();
+          reportFailure(d.getClassName() + "::" + d.getMethodName(), f.getException());
+        }
       } catch (Throwable t) {
         System.err.println("[DaikonTestRunner] error running '" + spec + "': " + t);
       }
     }
 
     System.out.println("[DaikonTestRunner] total=" + total + " failures=" + failures);
+    System.out.flush();
+    System.err.flush();
+    // Exit explicitly: a test that leaves a non-daemon thread running (a
+    // server, executor or timer) otherwise keeps this JVM alive forever after
+    // every test has finished, so Chicory never finalizes the trace. Seen on
+    // Gson-14..17 and Jsoup-90..92: all tests done, trace frozen for hours.
+    // Chicory's shutdown hook still runs on System.exit and closes the trace.
+    System.exit(0);
   }
 }
