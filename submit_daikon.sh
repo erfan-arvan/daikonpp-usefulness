@@ -102,8 +102,9 @@ MAX_WAIT_H="${MAX_WAIT_H:-12}"
 waited=0
 while :; do
   # Check every filesystem this task writes to: ROOT (outputs) and, if set,
-  # DAIKON_WORK_ROOT (checkout + in-progress trace).
-  free_gb=$(for d in "$ROOT" ${DAIKON_WORK_ROOT:+"$DAIKON_WORK_ROOT"}; do
+  # DAIKON_WORK_ROOT (checkout + in-progress trace) and DAIKON_TRACE_ROOT
+  # (finished traces).
+  free_gb=$(for d in "$ROOT" ${DAIKON_WORK_ROOT:+"$DAIKON_WORK_ROOT"} ${DAIKON_TRACE_ROOT:+"$DAIKON_TRACE_ROOT"}; do
               df -P -BG "$d" | awk 'NR==2 {gsub("G", "", $4); print $4}'
             done | sort -n | head -1)
   (( free_gb >= MIN_FREE_GB )) && break

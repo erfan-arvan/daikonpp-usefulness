@@ -117,6 +117,14 @@ _trace_files_for_cleanup: list[Path] = []
 def _cleanup_traces():
     for p in _trace_files_for_cleanup:
         p.unlink(missing_ok=True)
+    # Remove a now-empty per-bug DAIKON_TRACE_ROOT directory (never out_dir,
+    # which still holds the results).
+    for d in {p.parent for p in _trace_files_for_cleanup}:
+        if os.environ.get("DAIKON_TRACE_ROOT") and d.is_relative_to(os.environ["DAIKON_TRACE_ROOT"]):
+            try:
+                d.rmdir()
+            except OSError:
+                pass
 
 
 def _handle_sigterm(signum, frame):
@@ -410,12 +418,30 @@ def main():
     )
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    trace_a = out_dir / "traceA.dtrace.gz"
-    trace_full = out_dir / "traceFull.dtrace.gz"
-    inv_a = out_dir / "invA.inv.gz"
-    inv_full = out_dir / "invFull.inv.gz"
+    # DAIKON_TRACE_ROOT (set by submit_daikon_scratch_traces.sh) keeps the
+    # large intermediate files (dtrace/inv, tens of GB each) under
+    # <DAIKON_TRACE_ROOT>/<PROJECT>_<BUG>/ on another filesystem, e.g.
+    # /scratch; only the small final results stay in out_dir. A file that
+    # already exists in out_dir from an earlier run is still used in place,
+    # so finished Chicory phases are never redone.
+    trace_root = os.environ.get("DAIKON_TRACE_ROOT")
+    trace_dir = Path(trace_root) / out_dir.name if trace_root else out_dir
+    trace_dir.mkdir(parents=True, exist_ok=True)
+
+    def _intermediate(name: str) -> Path:
+        legacy = out_dir / name
+        return legacy if legacy.exists() else trace_dir / name
+
+    trace_a = _intermediate("traceA.dtrace.gz")
+    trace_full = _intermediate("traceFull.dtrace.gz")
+    inv_a = _intermediate("invA.inv.gz")
+    inv_full = _intermediate("invFull.inv.gz")
+    print(f"[INFO] intermediate files: traceA={trace_a} traceFull={trace_full}")
     global _trace_files_for_cleanup
     _trace_files_for_cleanup = [trace_a, trace_full, inv_a, inv_full, _inv_marker(inv_a), _inv_marker(inv_full)]
+    # A regenerated file always goes to trace_dir, never back to a legacy
+    # out_dir location; clean up both on success.
+    _trace_files_for_cleanup += [trace_dir / p.name for p in list(_trace_files_for_cleanup)]
 
     # Defects4J's own install docs say v2.x requires Java 8, which may differ
     # from the JDK daikon.jar was built/needs to run under on this cluster's
@@ -536,6 +562,7 @@ def main():
             print(f"[WARN] {trace_a} exists but is not a valid gzip stream (corrupted/truncated "
                   "leftover from a prior attempt) -- deleting so Chicory phase A reruns")
             trace_a.unlink()
+            trace_a = trace_dir / trace_a.name
         if trace_a.exists():
             print(f"[INFO] SKIP Chicory phase A -- {trace_a} already exists from a prior attempt")
         else:
@@ -550,6 +577,7 @@ def main():
             print(f"[WARN] {trace_full} exists but is not a valid gzip stream (corrupted/truncated "
                   "leftover from a prior attempt) -- deleting so Chicory phase B reruns")
             trace_full.unlink()
+            trace_full = trace_dir / trace_full.name
         if trace_full.exists():
             print(f"[INFO] SKIP Chicory phase B -- {trace_full} already exists from a prior attempt")
         else:
@@ -585,6 +613,7 @@ def main():
                 print(f"[WARN] Daikon could not read {trace} (corrupt content) -- deleting it, "
                       f"regenerating it with Chicory, and retrying Daikon once")
                 trace.unlink(missing_ok=True)
+                trace = trace_dir / trace.name
                 print(f">>> Chicory regenerate {label}: {args.project}-{args.bug_id}")
                 run_chicory(daikon_jar, runner_classes, cp_runner, pkg_pattern, omit_pattern, trace, work_dir, specs)
                 print(f">>> Daikon on {label} alone (retry)")
