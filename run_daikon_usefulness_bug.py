@@ -272,7 +272,21 @@ def run_daikon(daikon_jar: str, dtrace_files: list[Path], out_inv: Path):
     # a broken file instead of redoing this step. Writing to a temp name and
     # renaming only after run() returns (i.e. only on a clean exit) gives
     # this the same "exists == fully completed" guarantee Chicory already has.
-    tmp_out = out_inv.with_name(out_inv.name + ".tmp")
+    #
+    # The temp name MUST still end in ".gz": Daikon's own writer decides
+    # whether to gzip-compress -o's output purely by checking whether the
+    # PATH STRING ends in ".gz" (mirrors FileIO's identical check on the
+    # read side, "raw_filename.endsWith(\".gz\")"). A first version of this
+    # fix appended ".tmp" as a bare suffix ("invA.inv.gz.tmp"), which does
+    # NOT end in ".gz" -- Daikon silently wrote PLAIN uncompressed data to
+    # that path, and the subsequent rename() to a ".gz"-suffixed name just
+    # relabeled that plain data without ever compressing it. Confirmed
+    # directly: Collections-27 got past run_daikon() cleanly (no crash) but
+    # then failed at the print_invariants() step with "Not in GZIP format"
+    # reading that exact file back. Inserting ".tmp" before the final ".gz"
+    # instead keeps the extension check happy on both the write and the
+    # later read.
+    tmp_out = out_inv.with_name(out_inv.stem + ".tmp" + out_inv.suffix)
     tmp_out.unlink(missing_ok=True)
     cmd = [
         "java",
