@@ -1,0 +1,2 @@
+#!/bin/sh
+echo 'svn, version 1.14.1 (stub -- real svn not installed on this host)'

@@ -76,8 +76,26 @@ OMIT_PATTERN = r"junit\.|org\.junit\.|sun\.|java\.|com\.sun\.proxy"
 # itself was fine -- rerunning with more heap is the whole fix). Bumped for
 # every Chicory/Daikon invocation, not just JacksonDatabind, since any
 # project's trace can end up this size; override via DAIKON_JAVA_XMX if a
-# cluster's node memory can't fit this.
-JAVA_XMX = os.environ.get("DAIKON_JAVA_XMX", "12g")
+# cluster's node memory can't fit this. Raised again 12g -> 48g after
+# JacksonDatabind-111 and JacksonXml-5 still OOM'd at 12g (job 1343744);
+# submit_daikon.sh requests 96G, so this leaves ample room for JVM overhead.
+JAVA_XMX = os.environ.get("DAIKON_JAVA_XMX", "48g")
+
+# Substrings in Daikon's output that mean the INPUT TRACE is unreadable
+# (as opposed to Daikon running out of memory etc.). Seen in job
+# 1343533/1343744: "Bad modbit", "Mismatch between declaration and trace",
+# "Error while processing trace file" on traces written while the project
+# filesystem was out of quota.
+TRACE_READ_ERRORS = (
+    "Error while processing trace file",
+    "Error at line",
+    "Bad modbit",
+    "Mismatch between declaration and trace",
+    "Not in GZIP format",
+    "Unexpected end of ZLIB input stream",
+    "ZipException",
+    "EOFException",
+)
 
 # Set right after work_dir is computed in main(), read by _handle_sigterm.
 # A SIGTERM (the soft-timeout signal submit_daikon.sh's `timeout` sends, or
@@ -263,7 +281,7 @@ def run_chicory(
     shutil.move(str(produced), str(out_dtrace))
 
 
-def run_daikon(daikon_jar: str, dtrace_files: list[Path], out_inv: Path):
+def run_daikon(daikon_jar: str, dtrace_files: list[Path], out_inv: Path, pkg_pattern: str):
     # Unlike Chicory (which writes to a temp name in work_dir and only moves
     # the result into out_dir on success), Daikon's -o writes DIRECTLY to the
     # final path -- if this process crashes or is killed mid-write, a
@@ -319,17 +337,35 @@ def run_daikon(daikon_jar: str, dtrace_files: list[Path], out_inv: Path):
         # configuration option daikon.split.PptSplitter.dkconfig_disable_..."
         "--config_option",
         "daikon.split.PptSplitter.disable_splitting=true",
+        # Restrict inference to the project's own program points, applied
+        # when Daikon READS the trace (daikon.FileIO.ppt_included). Traces
+        # recorded before the derive_package_pattern() fix used Chicory
+        # --ppt-select-pattern=".*" (or "com\.google\..*" etc.) and so also
+        # contain third-party library and DaikonTestRunner ppts. Filtering
+        # here gives those traces exactly the ppt set a fresh trace would
+        # have, so completed Chicory phases are reused instead of rerun.
+        f"--ppt-select-pattern={pkg_pattern}",
         "-o",
         str(tmp_out),
         *[str(p) for p in dtrace_files],
     ]
-    run(cmd)
+    run(cmd, keep_tail=200)
     tmp_out.rename(out_inv)
+    _inv_marker(out_inv).write_text(pkg_pattern)
+
+
+def _inv_marker(inv: Path) -> Path:
+    """Sidecar recording the ppt-select pattern an .inv.gz was inferred with.
+    An .inv.gz without a matching marker predates the Daikon-side filter and
+    is recomputed (cheap next to Chicory)."""
+    return inv.with_name(inv.name + ".select")
 
 
 def print_invariants(daikon_jar: str, inv_file: Path) -> str:
     cmd = ["java", "-cp", daikon_jar, "daikon.PrintInvariants", str(inv_file)]
-    return capture(cmd, timeout=600)
+    # 10 min was too tight a cap for the largest .inv files; a timeout here
+    # would throw away an otherwise completed multi-hour run.
+    return capture(cmd, timeout=3 * 3600)
 
 
 def main():
@@ -371,7 +407,7 @@ def main():
     inv_a = out_dir / "invA.inv.gz"
     inv_full = out_dir / "invFull.inv.gz"
     global _trace_files_for_cleanup
-    _trace_files_for_cleanup = [trace_a, trace_full, inv_a, inv_full]
+    _trace_files_for_cleanup = [trace_a, trace_full, inv_a, inv_full, _inv_marker(inv_a), _inv_marker(inv_full)]
 
     # Defects4J's own install docs say v2.x requires Java 8, which may differ
     # from the JDK daikon.jar was built/needs to run under on this cluster's
@@ -510,25 +546,38 @@ def main():
                 daikon_jar, runner_classes, cp_runner, pkg_pattern, omit_pattern, trace_full, work_dir, specs_full_suite
             )
 
-        if inv_a.exists() and not is_valid_gzip(inv_a):
-            print(f"[WARN] {inv_a} exists but is not a valid gzip stream (corrupted/truncated "
-                  "leftover from a prior attempt) -- deleting so Daikon reruns on trace A")
-            inv_a.unlink()
-        if inv_a.exists():
-            print(f"[INFO] SKIP Daikon on trace A -- {inv_a} already exists from a prior attempt")
-        else:
-            print(">>> Daikon on trace A alone")
-            run_daikon(daikon_jar, [trace_a], inv_a)
+        def infer(label: str, trace: Path, inv: Path, specs: list[str]):
+            marker = _inv_marker(inv)
+            if inv.exists() and not (
+                is_valid_gzip(inv) and marker.is_file() and marker.read_text() == pkg_pattern
+            ):
+                print(f"[WARN] {inv} is corrupt or was inferred without the current ppt-select "
+                      f"pattern -- deleting so Daikon reruns on {label}")
+                inv.unlink()
+            if inv.exists():
+                print(f"[INFO] SKIP Daikon on {label} -- {inv} already exists from a prior attempt")
+                return
+            print(f">>> Daikon on {label} alone")
+            try:
+                run_daikon(daikon_jar, [trace], inv, pkg_pattern)
+            except subprocess.CalledProcessError as e:
+                out = e.output or ""
+                # A trace that passes the gzip check can still hold garbage
+                # lines (confirmed: Codec-15/16/17, Collections-25/26, Csv-15).
+                # Without this, every retry reused it and failed identically.
+                # Regenerate it once, in this same job, then retry Daikon.
+                if "OutOfMemoryError" in out or not any(m in out for m in TRACE_READ_ERRORS):
+                    raise
+                print(f"[WARN] Daikon could not read {trace} (corrupt content) -- deleting it, "
+                      f"regenerating it with Chicory, and retrying Daikon once")
+                trace.unlink(missing_ok=True)
+                print(f">>> Chicory regenerate {label}: {args.project}-{args.bug_id}")
+                run_chicory(daikon_jar, runner_classes, cp_runner, pkg_pattern, omit_pattern, trace, work_dir, specs)
+                print(f">>> Daikon on {label} alone (retry)")
+                run_daikon(daikon_jar, [trace], inv, pkg_pattern)
 
-        if inv_full.exists() and not is_valid_gzip(inv_full):
-            print(f"[WARN] {inv_full} exists but is not a valid gzip stream (corrupted/truncated "
-                  "leftover from a prior attempt) -- deleting so Daikon reruns on the full-suite trace")
-            inv_full.unlink()
-        if inv_full.exists():
-            print(f"[INFO] SKIP Daikon on the full-suite trace -- {inv_full} already exists from a prior attempt")
-        else:
-            print(">>> Daikon on the full-suite trace alone (no merge with trace A)")
-            run_daikon(daikon_jar, [trace_full], inv_full)
+        infer("trace A", trace_a, inv_a, specs_without_bug)
+        infer("the full-suite trace", trace_full, inv_full, specs_full_suite)
 
         text_a = print_invariants(daikon_jar, inv_a)
         text_ab = print_invariants(daikon_jar, inv_full)

@@ -9,8 +9,10 @@ scripts bundle).
 """
 from __future__ import annotations
 
+import collections
 import re
 import subprocess
+import sys
 from pathlib import Path
 
 # Tracks whatever child run() currently has blocked on, so a caller's own
@@ -35,17 +37,33 @@ def kill_current_subprocess():
         _current_subprocess.wait()
 
 
-def run(cmd, cwd=None, env=None, check=True):
+def run(cmd, cwd=None, env=None, check=True, keep_tail=0):
+    """Runs cmd with its output streamed to our stdout as usual. With
+    keep_tail=N, the last N lines of its combined stdout+stderr are also kept
+    and attached to a raised CalledProcessError as `.output`, so a caller can
+    tell WHY it failed (e.g. a corrupt trace vs. an OutOfMemoryError)."""
     global _current_subprocess
     print("+", " ".join(str(c) for c in cmd), flush=True)
-    proc = subprocess.Popen(cmd, cwd=cwd, env=env)
+    tail: collections.deque[str] = collections.deque(maxlen=keep_tail or 1)
+    if keep_tail:
+        proc = subprocess.Popen(
+            cmd, cwd=cwd, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            text=True, errors="replace",
+        )
+    else:
+        proc = subprocess.Popen(cmd, cwd=cwd, env=env)
     _current_subprocess = proc
     try:
+        if keep_tail:
+            for line in proc.stdout:
+                sys.stdout.write(line)
+                tail.append(line)
+            sys.stdout.flush()
         returncode = proc.wait()
     finally:
         _current_subprocess = None
     if check and returncode != 0:
-        raise subprocess.CalledProcessError(returncode, cmd)
+        raise subprocess.CalledProcessError(returncode, cmd, output="".join(tail) if keep_tail else None)
     return subprocess.CompletedProcess(cmd, returncode)
 
 

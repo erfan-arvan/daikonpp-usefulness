@@ -92,9 +92,29 @@ BUG_ID="${ROW#*,}"
 # yet" state the progress-check scripts already handle, self-healing on a
 # future rerun since run_daikon_usefulness_bug.py clears any half-finished
 # work_dir at the start of its own next attempt.
+# Don't start while the project filesystem is nearly full. Job 1343744's
+# tasks failed with "Disk quota exceeded" at checkout, and traces written
+# while it was full came out corrupt. Wait (up to MAX_WAIT_H) for other
+# tasks to finish and free space; the wait is subtracted from the 71h budget
+# below so the whole task still ends before the 72h walltime.
+MIN_FREE_GB="${MIN_FREE_GB:-300}"
+MAX_WAIT_H="${MAX_WAIT_H:-12}"
+waited=0
+while :; do
+  free_gb=$(df -P -BG "$ROOT" | awk 'NR==2 {gsub("G", "", $4); print $4}')
+  (( free_gb >= MIN_FREE_GB )) && break
+  if (( waited >= MAX_WAIT_H * 3600 )); then
+    echo ">>> NO SPACE: only ${free_gb}G free on $ROOT after waiting ${MAX_WAIT_H}h; not starting project=$PROJECT bug=$BUG_ID"
+    exit 1
+  fi
+  echo ">>> WAIT: only ${free_gb}G free on $ROOT (need ${MIN_FREE_GB}G); rechecking in 15 min"
+  sleep 900
+  waited=$((waited + 900))
+done
+
 set +e
 echo ">>> Running Daikon usefulness experiment for project=$PROJECT bug=$BUG_ID"
-timeout --signal=TERM --kill-after=5m 71h \
+timeout --signal=TERM --kill-after=5m $((71 * 3600 - waited))s \
   python3 "$ROOT/run_daikon_usefulness_batch.py" "$BUGS_CSV" --project "$PROJECT" --bug "$BUG_ID" --skip-existing
 rc=$?
 set -e
