@@ -235,6 +235,24 @@ def phase(
             ok = disable_test_method(test_file, test_method)
             print(f"[{'OK' if ok else 'WARN'}] disable {test_class}::{test_method} -> {test_file}")
 
+    # USEFULNESS_EXCLUDE_TESTS="pkg.Class::method,...": non-triggering tests
+    # to comment out in BOTH phases, so Phase A and Phase B still run the same
+    # suite apart from the triggering test. For tests that never finish under
+    # Oca's instrumentation, e.g. JacksonCore-23..25's
+    # AsyncTokenFilterTest::testSkipChildrenFailOnSplit, which passes in 2s
+    # on a plain checkout but spins in skipChildren() inside the instrumented
+    # run until the stale check kills it, forever.
+    excluded = [s.strip() for s in os.environ.get("USEFULNESS_EXCLUDE_TESTS", "").split(",") if s.strip()]
+    if excluded:
+        test_src_rel = capture(
+            ["defects4j", "export", "-p", "dir.src.tests"], cwd=work_dir, env=d4j_env()
+        ).strip()
+        for spec in excluded:
+            test_class, _, test_method = spec.partition("::")
+            test_file = find_test_file(str(work_dir), test_src_rel, test_class)
+            ok = bool(test_file) and disable_test_method(test_file, test_method)
+            print(f"[{'OK' if ok else 'WARN'}] exclude (both phases) {test_class}::{test_method} -> {test_file}")
+
     # daikonplusplus copies the project into DP_WORKDIR/project-<timestamp>/
     # and, in external-project mode, runs the test suite there via the
     # runner script. The runner script's stdout/stderr (i.e. the ACTUAL
