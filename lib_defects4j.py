@@ -247,39 +247,49 @@ def force_rel_under(work_dir: str, p: str) -> str:
     return p
 
 
-_PACKAGE_RE = re.compile(r"^\s*package\s+([\w.]+)\s*;")
+_PACKAGE_RE = re.compile(r"^\s*package\s+([\w.]+)\s*;", re.MULTILINE)
 
 
-def derive_package_pattern(main_src_dir: str, depth: int = 2, sample: int = 25) -> str:
-    """Scans up to `sample` .java files under main_src_dir for `package ...;`
-    declarations and returns a Chicory --ppt-select-pattern covering the
-    most common top-`depth`-segment package prefix (e.g. "org.apache.commons.*").
-    Falls back to matching everything if no package statements are found.
+def derive_package_pattern(main_src_dir: str) -> str:
+    """Returns a Chicory --ppt-select-pattern matching exactly the packages
+    declared under main_src_dir (and their subpackages), e.g.
+    "^(?:org\\.apache\\.commons\\.lang3)\\.".
+
+    Every .java file is read in full. An earlier version only looked at each
+    file's first 5 lines, but Apache-style sources open with a ~16-line
+    license header, so it never saw the `package` line and silently fell back
+    to ".*" -- confirmed on 29 of 46 runs (every Commons project, Gson, Time,
+    Closure). Chicory then traced third-party libraries and DaikonTestRunner
+    itself (default package, not covered by the omit pattern), inflating
+    traces to tens of GB and polluting the Phase A/B diff with runner state.
+
+    It also used only the first two package segments ("com.google"), which
+    for Closure matches Guava/protobuf classes too. Instead, this keeps the
+    minimal set of declared packages that covers all others (e.g.
+    com.google.javascript.jscomp, com.google.javascript.rhino,
+    com.google.debugging.sourcemap). The pattern is anchored with ^ because
+    Chicory applies it with Matcher.find() to the class, method and ppt name.
+
+    Raises instead of falling back to ".*" if no package is found.
     """
-    from collections import Counter
-
-    counts: Counter[str] = Counter()
-    n = 0
+    packages: set[str] = set()
     for java_file in Path(main_src_dir).rglob("*.java"):
-        if n >= sample:
-            break
         try:
             text = java_file.read_text(encoding="utf-8", errors="replace")
         except OSError:
             continue
-        for line in text.splitlines()[:5]:
-            m = _PACKAGE_RE.match(line)
-            if m:
-                parts = m.group(1).split(".")
-                prefix = ".".join(parts[:depth])
-                counts[prefix] += 1
-                n += 1
-                break
+        m = _PACKAGE_RE.search(text)
+        if m:
+            packages.add(m.group(1))
 
-    if not counts:
-        return ".*"
-    prefix = counts.most_common(1)[0][0]
-    return re.escape(prefix) + r"\..*"
+    if not packages:
+        raise RuntimeError(f"no `package` declarations found under {main_src_dir}")
+
+    roots: list[str] = []
+    for pkg in sorted(packages):
+        if not any(pkg == r or pkg.startswith(r + ".") for r in roots):
+            roots.append(pkg)
+    return "^(?:" + "|".join(re.escape(r) for r in roots) + r")\."
 
 
 def list_test_classes(bin_tests_dir: str) -> list[str]:
