@@ -101,13 +101,17 @@ MIN_FREE_GB="${MIN_FREE_GB:-300}"
 MAX_WAIT_H="${MAX_WAIT_H:-12}"
 waited=0
 while :; do
-  free_gb=$(df -P -BG "$ROOT" | awk 'NR==2 {gsub("G", "", $4); print $4}')
+  # Check every filesystem this task writes to: ROOT (outputs) and, if set,
+  # DAIKON_WORK_ROOT (checkout + in-progress trace).
+  free_gb=$(for d in "$ROOT" ${DAIKON_WORK_ROOT:+"$DAIKON_WORK_ROOT"}; do
+              df -P -BG "$d" | awk 'NR==2 {gsub("G", "", $4); print $4}'
+            done | sort -n | head -1)
   (( free_gb >= MIN_FREE_GB )) && break
   if (( waited >= MAX_WAIT_H * 3600 )); then
     echo ">>> NO SPACE: only ${free_gb}G free on $ROOT after waiting ${MAX_WAIT_H}h; not starting project=$PROJECT bug=$BUG_ID"
     exit 1
   fi
-  echo ">>> WAIT: only ${free_gb}G free on $ROOT (need ${MIN_FREE_GB}G); rechecking in 15 min"
+  echo ">>> WAIT: only ${free_gb}G free on $ROOT${DAIKON_WORK_ROOT:+ or $DAIKON_WORK_ROOT} (need ${MIN_FREE_GB}G); rechecking in 15 min"
   sleep 900
   waited=$((waited + 900))
 done

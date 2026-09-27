@@ -278,7 +278,15 @@ def run_chicory(
             "path; check the command above ran from work_dir)"
         )
     out_dtrace.parent.mkdir(parents=True, exist_ok=True)
-    shutil.move(str(produced), str(out_dtrace))
+    # work_dir may be on a different filesystem than out_dir (see
+    # DAIKON_WORK_ROOT), where shutil.move is a copy, not a rename. Copy to a
+    # temp name first and rename on the destination filesystem, so a job
+    # killed mid-copy never leaves a partial trace at the path main()'s
+    # skip-if-exists check trusts.
+    partial = out_dtrace.with_name(".partial-" + out_dtrace.name)
+    partial.unlink(missing_ok=True)
+    shutil.move(str(produced), str(partial))
+    partial.rename(out_dtrace)
 
 
 def run_daikon(daikon_jar: str, dtrace_files: list[Path], out_inv: Path, pkg_pattern: str):
@@ -419,7 +427,13 @@ def main():
     d4j_subprocess_env = d4j_env()
 
     version = f"{args.bug_id}b"
-    work_dir = root / "defects4j" / f"{args.project}-{version}_daikon"
+    # DAIKON_WORK_ROOT (set by submit_daikon_scratch.sh) puts the checkout and
+    # Chicory's in-progress trace on another filesystem, e.g. /scratch, so
+    # more bugs can run at once without filling /project. Finished traces and
+    # results still go to out_dir under ROOT.
+    work_root = Path(os.environ.get("DAIKON_WORK_ROOT", root / "defects4j"))
+    work_root.mkdir(parents=True, exist_ok=True)
+    work_dir = work_root / f"{args.project}-{version}_daikon"
     if work_dir.exists():
         shutil.rmtree(work_dir)
 
