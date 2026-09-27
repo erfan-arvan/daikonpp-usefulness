@@ -79,7 +79,19 @@ OMIT_PATTERN = r"junit\.|org\.junit\.|sun\.|java\.|com\.sun\.proxy"
 # cluster's node memory can't fit this. Raised again 12g -> 48g after
 # JacksonDatabind-111 and JacksonXml-5 still OOM'd at 12g (job 1343744);
 # submit_daikon.sh requests 96G, so this leaves ample room for JVM overhead.
-JAVA_XMX = os.environ.get("DAIKON_JAVA_XMX", "48g")
+def _default_xmx() -> str:
+    """85% of the memory SLURM gave this task (SLURM_MEM_PER_NODE, in MB),
+    leaving room for JVM overhead; 48g outside SLURM. Derived per task rather
+    than fixed, so a task submitted with a smaller --mem never gets a heap
+    larger than its allocation (which SLURM would kill). JacksonXml-3 ran out
+    of heap at 48g with --mem=96G; the submit scripts now request 200G."""
+    mem_mb = os.environ.get("SLURM_MEM_PER_NODE", "")
+    if mem_mb.isdigit():
+        return f"{int(int(mem_mb) * 0.85) // 1024}g"
+    return "48g"
+
+
+JAVA_XMX = os.environ.get("DAIKON_JAVA_XMX") or _default_xmx()
 
 # Substrings in Daikon's output that mean the INPUT TRACE is unreadable
 # (as opposed to Daikon running out of memory etc.). Seen in job
@@ -378,7 +390,7 @@ def _inv_marker(inv: Path) -> Path:
 
 
 def print_invariants(daikon_jar: str, inv_file: Path) -> str:
-    cmd = ["java", "-cp", daikon_jar, "daikon.PrintInvariants", str(inv_file)]
+    cmd = ["java", f"-Xmx{JAVA_XMX}", "-cp", daikon_jar, "daikon.PrintInvariants", str(inv_file)]
     # 10 min was too tight a cap for the largest .inv files; a timeout here
     # would throw away an otherwise completed multi-hour run.
     return capture(cmd, timeout=3 * 3600)

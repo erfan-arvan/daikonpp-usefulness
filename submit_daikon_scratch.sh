@@ -9,7 +9,7 @@
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=8
 #SBATCH --time=72:00:00
-#SBATCH --mem=96G
+#SBATCH --mem=200G
 
 # Same Daikon pipeline as submit_daikon.sh (submit from the same directory,
 # with the same BUGS_CSV and --array semantics), except each bug's defects4j

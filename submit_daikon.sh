@@ -9,11 +9,10 @@
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=8
 #SBATCH --time=72:00:00
-# 96G: run_daikon_usefulness_bug.py's JVM heap default is now -Xmx12g (up
-# from 4g, after JacksonDatabind-111 OOM'd at 4g), plus JVM/OS overhead and
-# defects4j's own compile step running alongside -- this keeps a generous
-# margin over that, not a tight fit.
-#SBATCH --mem=96G
+# 200G (general nodes have >=450G): the Daikon/Chicory heap is 85% of this
+# allocation (run_daikon_usefulness_bug.py:_default_xmx). 96G / -Xmx48g was
+# not enough for JacksonXml-3.
+#SBATCH --mem=200G
 
 # One array task per BUG -- array index N runs the N-th row of BUGS_CSV
 # directly (1 row = 1 task, no per-project grouping). This matters for

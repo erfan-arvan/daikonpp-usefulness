@@ -9,7 +9,7 @@
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=8
 #SBATCH --time=72:00:00
-#SBATCH --mem=96G
+#SBATCH --mem=200G
 
 # Like submit_daikon_scratch.sh (checkout + in-progress trace on /scratch),
 # and additionally keeps each bug's finished traces and .inv files under
