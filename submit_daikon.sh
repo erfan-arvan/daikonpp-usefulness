@@ -48,7 +48,11 @@ export ROOT="$PWD"
 
 # If setup.sh built things for you, source its env file (DAIKON_JAR,
 # defects4j on PATH, etc.) instead of hardcoding the path below:
+# usefulness_env.sh sets DAIKON_JAR unconditionally; keep a DAIKON_JAR given
+# at submission (e.g. the patched Chicory jar) instead.
+_submitted_daikon_jar="${DAIKON_JAR:-}"
 [[ -f "$ROOT/usefulness_env.sh" ]] && source "$ROOT/usefulness_env.sh"
+[[ -n "$_submitted_daikon_jar" ]] && export DAIKON_JAR="$_submitted_daikon_jar"
 
 # REQUIRED if not already set by usefulness_env.sh above: point this at your
 # built daikon.jar.
