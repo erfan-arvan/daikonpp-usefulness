@@ -97,12 +97,16 @@ JAVA_XMX = os.environ.get("DAIKON_JAVA_XMX") or _default_xmx()
 # (as opposed to Daikon running out of memory etc.). Seen in job
 # 1343533/1343744: "Bad modbit", "Mismatch between declaration and trace",
 # "Error while processing trace file" on traces written while the project
-# filesystem was out of quota.
+# filesystem was out of quota. Only specific trace-content errors: Daikon
+# prefixes EVERY error with "Error at line N" / "Error while processing trace
+# file", including its own internal bugs (e.g. "at end of add_modified"), and
+# matching those deleted a correctly finished trace (JacksonDatabind-109).
+# Any other error fails the task and keeps the traces for the rerun.
 TRACE_READ_ERRORS = (
-    "Error while processing trace file",
-    "Error at line",
     "Bad modbit",
     "Mismatch between declaration and trace",
+    "No declaration was provided",
+    "Didn't find call with nonce",
     "Not in GZIP format",
     "Unexpected end of ZLIB input stream",
     "ZipException",
