@@ -365,6 +365,7 @@ def run_daikon(daikon_jar: str, dtrace_files: list[Path], out_inv: Path, pkg_pat
         # configuration option daikon.split.PptSplitter.dkconfig_disable_..."
         "--config_option",
         "daikon.split.PptSplitter.disable_splitting=true",
+        *[a for opt in DAIKON_EXTRA_CONFIG for a in ("--config_option", opt)],
         # Restrict inference to the project's own program points, applied
         # when Daikon READS the trace (daikon.FileIO.ppt_included). Traces
         # recorded before the derive_package_pattern() fix used Chicory
@@ -379,7 +380,22 @@ def run_daikon(daikon_jar: str, dtrace_files: list[Path], out_inv: Path, pkg_pat
     ]
     run(cmd, keep_tail=200)
     tmp_out.rename(out_inv)
-    _inv_marker(out_inv).write_text(pkg_pattern)
+    _inv_marker(out_inv).write_text(_inv_marker_text(pkg_pattern))
+
+
+# DAIKON_EXTRA_CONFIG="opt1,opt2": extra Daikon --config_option values, set
+# per submission. Used for Gson, where Daikon itself crashes inside the
+# linear-ternary invariant ("at end of add_modified", thrown from
+# LinearTernaryCore at a line marked unreachable) on every attempt:
+#   daikon.inv.ternary.threeScalar.LinearTernary.enabled=false,
+#   daikon.inv.ternary.threeScalar.LinearTernaryFloat.enabled=false
+DAIKON_EXTRA_CONFIG = [o.strip() for o in os.environ.get("DAIKON_EXTRA_CONFIG", "").split(",") if o.strip()]
+
+
+def _inv_marker_text(pkg_pattern: str) -> str:
+    # Unchanged (just the pattern) when no extra config is set, so .inv files
+    # already inferred by running tasks stay valid.
+    return pkg_pattern + ("\n" + ",".join(DAIKON_EXTRA_CONFIG) if DAIKON_EXTRA_CONFIG else "")
 
 
 def _inv_marker(inv: Path) -> Path:
@@ -603,7 +619,7 @@ def main():
         def infer(label: str, trace: Path, inv: Path, specs: list[str]):
             marker = _inv_marker(inv)
             if inv.exists() and not (
-                is_valid_gzip(inv) and marker.is_file() and marker.read_text() == pkg_pattern
+                is_valid_gzip(inv) and marker.is_file() and marker.read_text() == _inv_marker_text(pkg_pattern)
             ):
                 print(f"[WARN] {inv} is corrupt or was inferred without the current ppt-select "
                       f"pattern -- deleting so Daikon reruns on {label}")
