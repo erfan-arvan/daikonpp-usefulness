@@ -13,9 +13,10 @@
 
 # RQ3 (expressiveness): Oca on the latest fixed version of each project.
 # One array task per project; the index selects from PROJECTS below
-# (0-15, e.g. `sbatch --array=0-15 submit_oca_fixed.sh`). Same environment
+# (0-14, e.g. `sbatch --array=0-14 submit_oca_fixed.sh`) -- the same 15
+# projects as the RQ5 usefulness runs. Same environment
 # as submit.sh (the RQ5 Oca runs).
-PROJECTS=(Cli Closure Codec Collections Compress Csv Gson JacksonCore JacksonDatabind JacksonXml Jsoup JxPath Lang Math Mockito Time)
+PROJECTS=(Cli Closure Codec Collections Compress Csv Gson JacksonCore JacksonDatabind JacksonXml Jsoup JxPath Lang Math Time)
 
 set -euo pipefail
 
