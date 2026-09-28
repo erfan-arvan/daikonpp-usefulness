@@ -207,12 +207,13 @@ def phase(
     disable_bug_test: bool,
     disable_real_llm: bool,
     label: str,
+    version_suffix: str = "b",
 ):
     phase_start = time.monotonic()
     print(f"[SYSTEM] {project}-{bug_id} phase={label} started at {datetime.now().isoformat(timespec='seconds')}")
     print(f"[SYSTEM] {project}-{bug_id} phase={label} using cassette dir -> {cassette_dir}")
 
-    version = f"{bug_id}b"
+    version = f"{bug_id}{version_suffix}"
     work_dir = root / "defects4j" / f"{project}-{version}_{label}"
     if work_dir.exists():
         shutil.rmtree(work_dir)
