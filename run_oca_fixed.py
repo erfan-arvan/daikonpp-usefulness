@@ -5,9 +5,16 @@ active bug id, with its full, unmodified test suite.
 
 Same Oca configuration as the RQ5 runs (run_usefulness_bug.py): few-shot
 prompting, METHOD_BODY,SCOPE,CLASS_DOC context, DP_TEST_FILTER=0, the same
-LLM model and the same per-project LLM cassette dir, so a prompt already
-answered for this project is replayed instead of re-queried. Only one phase
-is run: no test is disabled, and real LLM calls are allowed.
+LLM model and the same per-project LLM cassette dir
+(outputs_usefulness/_cassettes/<PROJECT>). Only one phase is run, with no
+test disabled.
+
+By default the LLM is REPLAY-ONLY (DP_DISABLE_REAL_LLM=1): every prompt is
+answered from the RQ5 cassettes and no API call is ever made. A prompt with
+no cassette entry (e.g. a method changed by the bug's fix) gets no
+invariants -- Oca's LlmInvariantGenerator returns an empty list on a
+replay miss. Set OCA_FIXED_ALLOW_LLM=1 to query the real LLM for misses
+(and record them).
 
 Usage:
     python3 run_oca_fixed.py <PROJECT> [--bug N] [--maxk N]
@@ -80,7 +87,7 @@ def main():
         cassette_dir=cassette_dir,
         maxk=args.maxk,
         disable_bug_test=False,
-        disable_real_llm=False,
+        disable_real_llm=os.environ.get("OCA_FIXED_ALLOW_LLM") != "1",
         label="fixed",
         version_suffix="f",
     )
