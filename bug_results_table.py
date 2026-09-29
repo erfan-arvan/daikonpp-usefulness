@@ -80,23 +80,42 @@ def slurm_out_index():
     return idx
 
 
-def queue_states(rows_by_index):
-    """{(project, bug): 'running' | 'pending'} for Daikon tasks in the queue now."""
-    out = subprocess.run(['squeue', '-u', os.environ.get('USER', ''), '-h', '-r', '-o', '%j|%F|%K|%T|%Z'],
+def load_csv_rows(path):
+    with open(path, newline='') as f:
+        return {i: (r['project'].strip(), r['bug_id'].strip()) for i, r in enumerate(csv.DictReader(f))}
+
+
+def queue_states(default_rows):
+    """{(project, bug): 'running' | 'pending'} for Daikon tasks in the queue now.
+
+    A pending task has no .out yet, so its bug comes from its array index in
+    the CSV the job was submitted with: the CSV named in the job's SLURM
+    comment (`scontrol update JobId=<id> Comment=bugs_latest.csv`), else
+    bugs_last10_interleaved.csv.
+    """
+    out = subprocess.run(['squeue', '-u', os.environ.get('USER', ''), '-h', '-r', '-o', '%j|%F|%K|%T|%Z|%k'],
                          capture_output=True, text=True).stdout
+    csv_cache = {}
     states = {}
     for line in out.splitlines():
-        j, F, K, T, Z = line.split('|')
+        j, F, K, T, Z, comment = line.split('|', 5)
         if not j.startswith('usefulness-daikon') or not K.isdigit():
             continue
         f = Path(Z) / f'{j}.{F}_{K}.out'
         m = BUG_RE.search(head(f)) if f.exists() else None
         if m:
             key = (m[1], m[2])
-        elif int(K) in rows_by_index:  # pending: map the array index via the interleaved CSV
-            key = rows_by_index[int(K)]
         else:
-            continue
+            rows = default_rows
+            c = comment.strip()
+            if c.endswith('.csv'):
+                path = Path(Z) / c
+                if path not in csv_cache:
+                    csv_cache[path] = load_csv_rows(path) if path.exists() else {}
+                rows = csv_cache[path]
+            if int(K) not in rows:
+                continue
+            key = rows[int(K)]
         state = 'running' if T == 'RUNNING' else 'pending'
         if states.get(key) != 'running':
             states[key] = state
@@ -218,11 +237,7 @@ def main():
     args = ap.parse_args()
     by_project = bugs_by_project(args.csv, None)
 
-    rows_by_index = {}
-    if Path(args.interleaved_csv).exists():
-        with open(args.interleaved_csv, newline='') as f:
-            for i, row in enumerate(csv.DictReader(f)):
-                rows_by_index[i] = (row['project'].strip(), row['bug_id'].strip())
+    rows_by_index = load_csv_rows(args.interleaved_csv) if Path(args.interleaved_csv).exists() else {}
     queue = queue_states(rows_by_index)
     outs = slurm_out_index()
 
