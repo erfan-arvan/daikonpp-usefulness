@@ -16,6 +16,7 @@ Daikon status, from the latest attempt of each bug:
   error:<reason>    failed: oom, disk-quota, trace-corrupt, chicory,
                     daikon-internal, or other (matched on error lines only,
                     not on test output)
+  error:chicory-hang  log stops inside Chicory (no error, no end marker)
   incomplete        has a log but ended without any of the above
   not-run           no attempt found
 
@@ -144,7 +145,12 @@ def daikon_status(p, b, done, queue, outs):
             return f'error:{reason}'
     if 'Traceback' in text or 'FAILURE' in out_text:
         return 'error:other'
-    return 'incomplete' if log.exists() else 'not-run'
+    if not log.exists():
+        return 'not-run'
+    # Log stops inside Chicory with no error or end marker: Chicory hung and
+    # the task was stopped by hand (e.g. Jsoup-83..88).
+    last = errs.strip().splitlines()[-1] if errs.strip() else ''
+    return 'error:chicory-hang' if last.startswith('Chicory') else 'incomplete'
 
 
 def yn(v):
