@@ -53,8 +53,11 @@ ERROR_REASONS = [
     ('oom', re.compile(r'OutOfMemoryError')),
     ('disk-quota', re.compile(r'Disk quota exceeded|No space left on device')),
     ('daikon-internal', re.compile(r'at end of add_modified')),
-    ('chicory', re.compile(r'VerifyError|Traversal pattern not initialized|Can\'t find ChicoryPremain')),
-    ('trace-corrupt', re.compile(r'Bad modbit|Mismatch between declaration and trace|No declaration was provided'
+    # "No declaration was provided": Chicory's decl/data desync bug (Bug 4 in
+    # DAIKON_CHICORY_BUGS_AND_FIXES.md), e.g. Jsoup.
+    ('chicory', re.compile(r'VerifyError|Traversal pattern not initialized|Can\'t find ChicoryPremain'
+                           r'|No declaration was provided')),
+    ('trace-corrupt', re.compile(r'Bad modbit|Mismatch between declaration and trace'
                                  r"|Didn't find call with nonce|Not in GZIP format|ZLIB|ZipException|EOFException")),
 ]
 
@@ -108,6 +111,17 @@ def error_lines(text, n=300):
     return '\n'.join(keep[-n:])
 
 
+def slurm_state(out_path):
+    """SLURM's final state of the task that wrote out_path
+    (<name>.<jobid>_<task>.out), e.g. CANCELLED, TIMEOUT, COMPLETED."""
+    m = re.search(r'\.(\d+_\d+)\.out$', str(out_path))
+    if not m:
+        return ''
+    out = subprocess.run(['sacct', '-j', m[1], '-X', '-n', '-o', 'State%30'],
+                         capture_output=True, text=True).stdout.split()
+    return out[0] if out else ''
+
+
 def daikon_status(p, b, done, queue, outs):
     if done:
         return 'done'
@@ -119,7 +133,10 @@ def daikon_status(p, b, done, queue, outs):
     out_text = tail(out_path, 64 * 1024) if out_path else ''
     if '>>> TIMEOUT' in out_text or 'TimeoutExpired' in text:
         return 'timeout'
-    if 'caught SIGTERM' in text or 'caught SIGTERM' in out_text:
+    state = slurm_state(out_path) if out_path else ''
+    if state == 'TIMEOUT':
+        return 'timeout'
+    if 'caught SIGTERM' in text or 'caught SIGTERM' in out_text or state.startswith('CANCELLED'):
         return 'cancelled'
     errs = error_lines(text)
     for reason, rx in ERROR_REASONS:
