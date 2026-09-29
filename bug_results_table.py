@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-"""Per-bug RQ5 results for Oca and Daikon, plus summaries for the latest 5
-and latest 10 bugs of each project.
+"""Per-bug RQ5 results for Oca and Daikon: a table and summary for the latest
+5 bugs of each project, then a table and summary for the latest 10.
 
 For every bug in the CSV prints: its rank within its project (1 = highest
 bug id), whether Daikon and Oca finished, and whether each exposed the bug
@@ -20,6 +20,15 @@ from compare_catches import daikon_exposes, oca_exposes
 
 def yn(v):
     return '-' if v is None else ('yes' if v else 'no')
+
+
+def print_table(rows):
+    print(f'{"bug":<22}{"rank":>5}  {"daikon_done":<12}{"oca_done":<10}{"daikon_exposes":<16}{"oca_exposes":<12}')
+    for r in rows:
+        print(f'{r["project"] + "-" + r["bug"]:<22}{r["rank"]:>5}  '
+              f'{yn(r["daikon_exposes"] is not None):<12}{yn(r["oca_exposes"] is not None):<10}'
+              f'{yn(r["daikon_exposes"]):<16}{yn(r["oca_exposes"]):<12}')
+    print()
 
 
 def summarize(rows, label):
@@ -61,15 +70,11 @@ def main():
                 'daikon_exposes': daikon_exposes(bug_dir),
             })
 
-    print(f'{"bug":<22}{"rank":>5}  {"daikon_done":<12}{"oca_done":<10}{"daikon_exposes":<16}{"oca_exposes":<12}')
-    for r in rows:
-        print(f'{r["project"] + "-" + r["bug"]:<22}{r["rank"]:>5}  '
-              f'{yn(r["daikon_exposes"] is not None):<12}{yn(r["oca_exposes"] is not None):<10}'
-              f'{yn(r["daikon_exposes"]):<16}{yn(r["oca_exposes"]):<12}')
-    print()
-
-    summarize([r for r in rows if r['rank'] <= 5], 'LATEST 5 per project')
-    summarize([r for r in rows if r['rank'] <= 10], 'LATEST 10 per project')
+    for n in (5, 10):
+        scope = [r for r in rows if r['rank'] <= n]
+        print(f'######## LATEST {n} BUGS PER PROJECT ########')
+        print_table(scope)
+        summarize(scope, f'LATEST {n} per project')
 
     with open(args.out, 'w', newline='') as f:
         w = csv.writer(f)
