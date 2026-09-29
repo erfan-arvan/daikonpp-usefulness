@@ -2,20 +2,98 @@
 """Per-bug RQ5 results for Oca and Daikon: a table and summary for the latest
 5 bugs of each project, then a table and summary for the latest 10.
 
-For every bug in the CSV prints: its rank within its project (1 = highest
-bug id), whether Daikon and Oca finished, and whether each exposed the bug
-(same rules as compare_catches.py). Writes the same table to
+For every bug prints its rank within its project (1 = highest bug id),
+Daikon's status, whether Oca finished, and whether each tool exposed the
+bug (same rules as compare_catches.py). Writes the same table to
 rq5_bug_results.csv.
+
+Daikon status, from the latest attempt of each bug:
+  done              daikon_outcomes.jsonl exists
+  running           a Daikon SLURM task for the bug is running or pending
+  timeout           hit the 71h job limit (">>> TIMEOUT" in its SLURM .out)
+                    or a step timed out (TimeoutExpired, e.g. PrintInvariants)
+  error:<reason>    failed: oom, disk-quota, trace-corrupt, chicory,
+                    daikon-internal, or other
+  not-run           no attempt found (never run, or cancelled)
 
 Usage:
     python3 bug_results_table.py [--csv bugs_last10.csv] [--out rq5_bug_results.csv]
 """
 import argparse
 import csv
+import os
+import re
+import subprocess
 from pathlib import Path
 
 from check_daikon_catches import bugs_by_project
 from compare_catches import daikon_exposes, oca_exposes
+
+LOG_DIR = Path('outputs_usefulness/batch_logs_daikon')
+BUG_RE = re.compile(r'project=(\S+) bug=(\S+)')
+
+# First match wins.
+ERROR_REASONS = [
+    ('oom', re.compile(r'OutOfMemoryError')),
+    ('disk-quota', re.compile(r'Disk quota exceeded|No space left on device')),
+    ('daikon-internal', re.compile(r'at end of add_modified')),
+    ('chicory', re.compile(r'VerifyError|Traversal pattern not initialized|Can\'t find ChicoryPremain')),
+    ('trace-corrupt', re.compile(r'Bad modbit|Mismatch between declaration and trace|No declaration was provided'
+                                 r"|Didn't find call with nonce|Not in GZIP format|ZLIB|ZipException|EOFException")),
+]
+
+
+def slurm_out_index():
+    """{(project, bug): (mtime, text)} of the newest Daikon SLURM .out per bug."""
+    idx = {}
+    for f in Path('.').glob('usefulness-daikon-*.out'):
+        try:
+            text = f.read_text(errors='replace')
+        except OSError:
+            continue
+        m = BUG_RE.search(text)
+        if not m:
+            continue
+        key, mt = (m[1], m[2]), f.stat().st_mtime
+        if key not in idx or mt > idx[key][0]:
+            idx[key] = (mt, text)
+    return idx
+
+
+def running_bugs(rows_by_index):
+    """Bugs with a Daikon task running or pending right now."""
+    out = subprocess.run(['squeue', '-u', os.environ.get('USER', ''), '-h', '-r', '-o', '%j|%F|%K|%T|%Z'],
+                         capture_output=True, text=True).stdout
+    running = set()
+    for line in out.splitlines():
+        j, F, K, T, Z = line.split('|')
+        if not j.startswith('usefulness-daikon') or not K.isdigit():
+            continue
+        f = Path(Z) / f'{j}.{F}_{K}.out'
+        m = BUG_RE.search(f.read_text(errors='replace')) if f.exists() else None
+        if m:
+            running.add((m[1], m[2]))
+        elif int(K) in rows_by_index:  # pending: map the array index via the interleaved CSV
+            running.add(rows_by_index[int(K)])
+    return running
+
+
+def daikon_status(p, b, done, running, outs):
+    if done:
+        return 'done'
+    if (p, b) in running:
+        return 'running'
+    log = LOG_DIR / f'{p}_{b}.log'
+    text = log.read_text(errors='replace') if log.exists() else ''
+    out_text = outs.get((p, b), (0, ''))[1]
+    if '>>> TIMEOUT' in out_text or 'TimeoutExpired' in text:
+        return 'timeout'
+    for reason, rx in ERROR_REASONS:
+        if rx.search(text):
+            return f'error:{reason}'
+    if 'Traceback' in text or 'FAILURE' in out_text:
+        return 'error:other'
+    return 'not-run'
 
 
 def yn(v):
@@ -23,11 +101,10 @@ def yn(v):
 
 
 def print_table(rows):
-    print(f'{"bug":<22}{"rank":>5}  {"daikon_done":<12}{"oca_done":<10}{"daikon_exposes":<16}{"oca_exposes":<12}')
+    print(f'{"bug":<22}{"rank":>5}  {"daikon_status":<22}{"oca_done":<10}{"daikon_exposes":<16}{"oca_exposes":<12}')
     for r in rows:
-        print(f'{r["project"] + "-" + r["bug"]:<22}{r["rank"]:>5}  '
-              f'{yn(r["daikon_exposes"] is not None):<12}{yn(r["oca_exposes"] is not None):<10}'
-              f'{yn(r["daikon_exposes"]):<16}{yn(r["oca_exposes"]):<12}')
+        print(f'{r["project"] + "-" + r["bug"]:<22}{r["rank"]:>5}  {r["daikon_status"]:<22}'
+              f'{yn(r["oca_exposes"] is not None):<10}{yn(r["daikon_exposes"]):<16}{yn(r["oca_exposes"]):<12}')
     print()
 
 
@@ -38,7 +115,10 @@ def summarize(rows, label):
     both = [r for r in rows if r['daikon_exposes'] is not None and r['oca_exposes'] is not None]
     count = lambda rs, f: sum(1 for r in rs if f(r))
     print(f'==== {label}: {n} bugs ====')
-    print(f'Daikon complete:                 {len(d_done)}/{n}')
+    print('Daikon status:')
+    statuses = sorted({r['daikon_status'] for r in rows}, key=lambda s: (s != 'done', s))
+    for s in statuses:
+        print(f'  {s:<28} {count(rows, lambda r: r["daikon_status"] == s)}')
     print(f'Oca complete:                    {len(o_done)}/{n}')
     print(f'Daikon exposes (of its complete): {count(d_done, lambda r: r["daikon_exposes"])}/{len(d_done)}')
     print(f'Oca exposes (of its complete):    {count(o_done, lambda r: r["oca_exposes"])}/{len(o_done)}')
@@ -57,17 +137,29 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--csv', default='bugs_last10.csv')
     ap.add_argument('--out', default='rq5_bug_results.csv')
+    ap.add_argument('--interleaved-csv', default='bugs_last10_interleaved.csv',
+                    help='CSV the Daikon array indices refer to (to identify pending tasks)')
     args = ap.parse_args()
     by_project = bugs_by_project(args.csv, None)
+
+    rows_by_index = {}
+    if Path(args.interleaved_csv).exists():
+        with open(args.interleaved_csv, newline='') as f:
+            for i, row in enumerate(csv.DictReader(f)):
+                rows_by_index[i] = (row['project'].strip(), row['bug_id'].strip())
+    running = running_bugs(rows_by_index)
+    outs = slurm_out_index()
 
     rows = []
     for p in sorted(by_project):
         for rank, bid in enumerate(sorted(by_project[p], key=int, reverse=True), 1):
             bug_dir = Path('outputs_usefulness') / f'{p}_{bid}'
+            d = daikon_exposes(bug_dir)
             rows.append({
                 'project': p, 'bug': bid, 'rank': rank,
+                'daikon_status': daikon_status(p, bid, d is not None, running, outs),
                 'oca_exposes': oca_exposes(bug_dir),
-                'daikon_exposes': daikon_exposes(bug_dir),
+                'daikon_exposes': d,
             })
 
     for n in (5, 10):
@@ -78,11 +170,10 @@ def main():
 
     with open(args.out, 'w', newline='') as f:
         w = csv.writer(f)
-        w.writerow(['project', 'bug', 'rank', 'daikon_complete', 'oca_complete', 'daikon_exposes', 'oca_exposes'])
+        w.writerow(['project', 'bug', 'rank', 'daikon_status', 'oca_complete', 'daikon_exposes', 'oca_exposes'])
         for r in rows:
-            w.writerow([r['project'], r['bug'], r['rank'],
-                        yn(r['daikon_exposes'] is not None), yn(r['oca_exposes'] is not None),
-                        yn(r['daikon_exposes']), yn(r['oca_exposes'])])
+            w.writerow([r['project'], r['bug'], r['rank'], r['daikon_status'],
+                        yn(r['oca_exposes'] is not None), yn(r['daikon_exposes']), yn(r['oca_exposes'])])
     print(f'table written to {args.out}')
 
 
