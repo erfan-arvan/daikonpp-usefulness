@@ -9,12 +9,15 @@ rq5_bug_results.csv.
 
 Daikon status, from the latest attempt of each bug:
   done              daikon_outcomes.jsonl exists
-  running           a Daikon SLURM task for the bug is running or pending
+  running / pending a Daikon SLURM task for the bug is running / queued (incl. held)
   timeout           hit the 71h job limit (">>> TIMEOUT" in its SLURM .out)
                     or a step timed out (TimeoutExpired, e.g. PrintInvariants)
+  cancelled         stopped by scancel (SIGTERM without a timeout)
   error:<reason>    failed: oom, disk-quota, trace-corrupt, chicory,
-                    daikon-internal, or other
-  not-run           no attempt found (never run, or cancelled)
+                    daikon-internal, or other (matched on error lines only,
+                    not on test output)
+  incomplete        has a log but ended without any of the above
+  not-run           no attempt found
 
 Usage:
     python3 bug_results_table.py [--csv bugs_last10.csv] [--out rq5_bug_results.csv]
@@ -73,11 +76,11 @@ def slurm_out_index():
     return idx
 
 
-def running_bugs(rows_by_index):
-    """Bugs with a Daikon task running or pending right now."""
+def queue_states(rows_by_index):
+    """{(project, bug): 'running' | 'pending'} for Daikon tasks in the queue now."""
     out = subprocess.run(['squeue', '-u', os.environ.get('USER', ''), '-h', '-r', '-o', '%j|%F|%K|%T|%Z'],
                          capture_output=True, text=True).stdout
-    running = set()
+    states = {}
     for line in out.splitlines():
         j, F, K, T, Z = line.split('|')
         if not j.startswith('usefulness-daikon') or not K.isdigit():
@@ -85,29 +88,46 @@ def running_bugs(rows_by_index):
         f = Path(Z) / f'{j}.{F}_{K}.out'
         m = BUG_RE.search(head(f)) if f.exists() else None
         if m:
-            running.add((m[1], m[2]))
+            key = (m[1], m[2])
         elif int(K) in rows_by_index:  # pending: map the array index via the interleaved CSV
-            running.add(rows_by_index[int(K)])
-    return running
+            key = rows_by_index[int(K)]
+        else:
+            continue
+        state = 'running' if T == 'RUNNING' else 'pending'
+        if states.get(key) != 'running':
+            states[key] = state
+    return states
 
 
-def daikon_status(p, b, done, running, outs):
+def error_lines(text, n=300):
+    """Last n log lines that can carry a tool error: test output
+    ([DaikonTestRunner] ...), javac chatter and stack frames are dropped so
+    that e.g. a test named ...EOFException... isn't read as a Daikon error."""
+    keep = [l for l in text.splitlines()
+            if not l.startswith(('[DaikonTestRunner]', '    [javac]', '\tat ', '    at '))]
+    return '\n'.join(keep[-n:])
+
+
+def daikon_status(p, b, done, queue, outs):
     if done:
         return 'done'
-    if (p, b) in running:
-        return 'running'
+    if (p, b) in queue:
+        return queue[(p, b)]
     log = LOG_DIR / f'{p}_{b}.log'
     text = tail(log) if log.exists() else ''
     out_path = outs.get((p, b), (0, None))[1]
     out_text = tail(out_path, 64 * 1024) if out_path else ''
     if '>>> TIMEOUT' in out_text or 'TimeoutExpired' in text:
         return 'timeout'
+    if 'caught SIGTERM' in text or 'caught SIGTERM' in out_text:
+        return 'cancelled'
+    errs = error_lines(text)
     for reason, rx in ERROR_REASONS:
-        if rx.search(text):
+        if rx.search(errs):
             return f'error:{reason}'
     if 'Traceback' in text or 'FAILURE' in out_text:
         return 'error:other'
-    return 'not-run'
+    return 'incomplete' if log.exists() else 'not-run'
 
 
 def yn(v):
@@ -161,7 +181,7 @@ def main():
         with open(args.interleaved_csv, newline='') as f:
             for i, row in enumerate(csv.DictReader(f)):
                 rows_by_index[i] = (row['project'].strip(), row['bug_id'].strip())
-    running = running_bugs(rows_by_index)
+    queue = queue_states(rows_by_index)
     outs = slurm_out_index()
 
     rows = []
@@ -171,7 +191,7 @@ def main():
             d = daikon_exposes(bug_dir)
             rows.append({
                 'project': p, 'bug': bid, 'rank': rank,
-                'daikon_status': daikon_status(p, bid, d is not None, running, outs),
+                'daikon_status': daikon_status(p, bid, d is not None, queue, outs),
                 'oca_exposes': oca_exposes(bug_dir),
                 'daikon_exposes': d,
             })
