@@ -28,6 +28,7 @@ import csv
 import os
 import re
 import subprocess
+import time
 from pathlib import Path
 
 from check_daikon_catches import bugs_by_project
@@ -161,11 +162,32 @@ STOPPED = {
 }
 
 
+WORK_ROOTS = [Path('defects4j'), Path('/scratch/mjk76') / os.environ.get('USER', '') / 'usefullness' / 'defects4j']
+
+
+def recently_active(p, b, minutes=30):
+    """True if the bug's Daikon log or in-progress Chicory trace was written
+    in the last `minutes` -- a running task even if squeue didn't map it."""
+    cutoff = time.time() - minutes * 60
+    paths = [LOG_DIR / f'{p}_{b}.log']
+    for root in WORK_ROOTS:
+        paths += list((root / f'{p}-{b}b_daikon').glob('.chicory-trace*.dtrace.gz'))
+    for path in paths:
+        try:
+            if path.stat().st_mtime >= cutoff:
+                return True
+        except OSError:
+            pass
+    return False
+
+
 def daikon_status(p, b, done, queue, outs):
     if done:
         return 'done'
     if (p, b) in queue:
         return queue[(p, b)]
+    if recently_active(p, b):
+        return 'running'
     stopped = STOPPED.get((p, b)) or STOPPED.get((p, None))
     if stopped:
         return stopped
