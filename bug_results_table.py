@@ -32,6 +32,19 @@ from compare_catches import daikon_exposes, oca_exposes
 LOG_DIR = Path('outputs_usefulness/batch_logs_daikon')
 BUG_RE = re.compile(r'project=(\S+) bug=(\S+)')
 
+def head(path, n=64 * 1024):
+    with open(path, 'rb') as f:
+        return f.read(n).decode(errors='replace')
+
+
+def tail(path, n=2 * 1024 * 1024):
+    """Last n bytes only: Daikon logs include all test output and can be GBs."""
+    with open(path, 'rb') as f:
+        f.seek(0, 2)
+        f.seek(max(0, f.tell() - n))
+        return f.read().decode(errors='replace')
+
+
 # First match wins.
 ERROR_REASONS = [
     ('oom', re.compile(r'OutOfMemoryError')),
@@ -44,19 +57,19 @@ ERROR_REASONS = [
 
 
 def slurm_out_index():
-    """{(project, bug): (mtime, text)} of the newest Daikon SLURM .out per bug."""
+    """{(project, bug): (mtime, path)} of the newest Daikon SLURM .out per bug."""
     idx = {}
     for f in Path('.').glob('usefulness-daikon-*.out'):
         try:
-            text = f.read_text(errors='replace')
+            m = BUG_RE.search(head(f))
+            mt = f.stat().st_mtime
         except OSError:
             continue
-        m = BUG_RE.search(text)
         if not m:
             continue
-        key, mt = (m[1], m[2]), f.stat().st_mtime
+        key = (m[1], m[2])
         if key not in idx or mt > idx[key][0]:
-            idx[key] = (mt, text)
+            idx[key] = (mt, f)
     return idx
 
 
@@ -70,7 +83,7 @@ def running_bugs(rows_by_index):
         if not j.startswith('usefulness-daikon') or not K.isdigit():
             continue
         f = Path(Z) / f'{j}.{F}_{K}.out'
-        m = BUG_RE.search(f.read_text(errors='replace')) if f.exists() else None
+        m = BUG_RE.search(head(f)) if f.exists() else None
         if m:
             running.add((m[1], m[2]))
         elif int(K) in rows_by_index:  # pending: map the array index via the interleaved CSV
@@ -84,8 +97,9 @@ def daikon_status(p, b, done, running, outs):
     if (p, b) in running:
         return 'running'
     log = LOG_DIR / f'{p}_{b}.log'
-    text = log.read_text(errors='replace') if log.exists() else ''
-    out_text = outs.get((p, b), (0, ''))[1]
+    text = tail(log) if log.exists() else ''
+    out_path = outs.get((p, b), (0, None))[1]
+    out_text = tail(out_path, 64 * 1024) if out_path else ''
     if '>>> TIMEOUT' in out_text or 'TimeoutExpired' in text:
         return 'timeout'
     for reason, rx in ERROR_REASONS:
