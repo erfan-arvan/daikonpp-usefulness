@@ -56,8 +56,9 @@ ERROR_REASONS = [
     ('daikon-internal', re.compile(r'at end of add_modified')),
     # "No declaration was provided": Chicory's decl/data desync bug (Bug 4 in
     # DAIKON_CHICORY_BUGS_AND_FIXES.md), e.g. Jsoup.
-    ('chicory', re.compile(r'VerifyError|Traversal pattern not initialized|Can\'t find ChicoryPremain'
-                           r'|No declaration was provided')),
+    # "Can't find ChicoryPremain" is our own setup error (a jar not named
+    # daikon.jar), not a Chicory failure -- deliberately not matched here.
+    ('chicory', re.compile(r'VerifyError|Traversal pattern not initialized|No declaration was provided')),
     ('trace-corrupt', re.compile(r'Bad modbit|Mismatch between declaration and trace'
                                  r"|Didn't find call with nonce|Not in GZIP format|ZLIB|ZipException|EOFException")),
 ]
