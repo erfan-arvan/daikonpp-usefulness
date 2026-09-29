@@ -123,11 +123,30 @@ def slurm_state(out_path):
     return out[0] if out else ''
 
 
+# Bugs we stopped on purpose, with the reason we report. Applied only when
+# the bug is not done and not in the queue, so a later rerun still shows its
+# real state.
+#  - Jsoup: Chicory fails on this project (VerifyError, "Traversal pattern not
+#    initialized", "No declaration was provided", hangs); its remaining bugs
+#    were cancelled once that was established.
+#  - Compress-46, JacksonCore-25: still in Chicory phase A after 52h with
+#    400-550G traces; cancelled because they could not finish in the 71h
+#    limit (and were filling /project).
+STOPPED = {
+    ('Jsoup', None): 'error:chicory',
+    ('Compress', '46'): 'timeout',
+    ('JacksonCore', '25'): 'timeout',
+}
+
+
 def daikon_status(p, b, done, queue, outs):
     if done:
         return 'done'
     if (p, b) in queue:
         return queue[(p, b)]
+    stopped = STOPPED.get((p, b)) or STOPPED.get((p, None))
+    if stopped:
+        return stopped
     log = LOG_DIR / f'{p}_{b}.log'
     text = tail(log) if log.exists() else ''
     out_path = outs.get((p, b), (0, None))[1]
