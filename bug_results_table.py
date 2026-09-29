@@ -148,13 +148,15 @@ def slurm_state(out_path):
 #  - Jsoup: Chicory fails on this project (VerifyError, "Traversal pattern not
 #    initialized", "No declaration was provided", hangs); its remaining bugs
 #    were cancelled once that was established.
-#  - Compress-46, JacksonCore-25: still in Chicory phase A after 52h with
-#    400-550G traces; cancelled because they could not finish in the 71h
-#    limit (and were filling /project).
+#  - Compress, JacksonCore, Time: Chicory alone needs more than the 72h job
+#    limit (Compress-46 and JacksonCore-25 were still in phase A after 52h
+#    with 430G/544G traces; Time-24..26 at 270-490G after 20-50h), so their
+#    remaining bugs were cancelled as unable to finish within 72h.
 STOPPED = {
     ('Jsoup', None): 'error:chicory',
-    ('Compress', '46'): 'timeout',
-    ('JacksonCore', '25'): 'timeout',
+    ('Compress', None): 'timeout',
+    ('JacksonCore', None): 'timeout',
+    ('Time', None): 'timeout',
 }
 
 
