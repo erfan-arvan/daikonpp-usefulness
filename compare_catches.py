@@ -9,7 +9,7 @@ finished are compared; bugs finished by only one tool are counted
 separately.
 
 Usage:
-    python3 compare_catches.py [--last N] [--csv bugs_last10.csv]
+    python3 compare_catches.py [--last N] [--csv bugs_last10.csv,bugs.csv]
 """
 import argparse
 import json
@@ -39,7 +39,7 @@ def daikon_exposes(bug_dir: Path):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--last', type=int, default=None)
-    ap.add_argument('--csv', default='bugs_last10.csv')
+    ap.add_argument('--csv', default='bugs_last10.csv,bugs.csv')
     args = ap.parse_args()
     by_project = bugs_by_project(args.csv, args.last)
 

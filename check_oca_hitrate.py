@@ -4,7 +4,7 @@ HELD in Phase A and was FALSIFIED in Phase B, see rq5_check.compute_rq5)
 over the bugs whose Oca run is complete.
 
 Usage:
-    python3 check_oca_hitrate.py [--last N] [--csv bugs_last10.csv]
+    python3 check_oca_hitrate.py [--last N] [--csv bugs_last10.csv,bugs.csv]
 
 --last N restricts each project to its N highest bug ids in the CSV, the
 same bug set as `check_daikon_catches.py --last N`.
@@ -20,7 +20,7 @@ from rq5_check import RunIncompleteError, compute_rq5
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--last', type=int, default=None)
-    ap.add_argument('--csv', default='bugs_last10.csv')
+    ap.add_argument('--csv', default='bugs_last10.csv,bugs.csv')
     args = ap.parse_args()
     by_project = bugs_by_project(args.csv, args.last)
 

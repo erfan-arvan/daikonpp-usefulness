@@ -21,7 +21,7 @@ Daikon status, from the latest attempt of each bug:
   not-run           no attempt found
 
 Usage:
-    python3 bug_results_table.py [--csv bugs_last10.csv] [--out rq5_bug_results.csv]
+    python3 bug_results_table.py [--csv bugs_last10.csv,bugs.csv] [--out rq5_bug_results.csv]
 """
 import argparse
 import csv
@@ -211,7 +211,7 @@ def summarize(rows, label):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument('--csv', default='bugs_last10.csv')
+    ap.add_argument('--csv', default='bugs_last10.csv,bugs.csv')
     ap.add_argument('--out', default='rq5_bug_results.csv')
     ap.add_argument('--interleaved-csv', default='bugs_last10_interleaved.csv',
                     help='CSV the Daikon array indices refer to (to identify pending tasks)')

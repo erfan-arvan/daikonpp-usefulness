@@ -2,7 +2,7 @@
 """List the Daikon bugs with at least one FALSIFIED invariant (RQ5).
 
 Usage:
-    python3 check_daikon_catches.py [--last N] [--csv bugs_last10.csv]
+    python3 check_daikon_catches.py [--last N] [--csv bugs_last10.csv,bugs.csv]
 
 --last N restricts each project to its N highest bug ids in the CSV (e.g.
 --last 5 for the latest 5 bugs); without it every bug in the CSV is used.
@@ -14,21 +14,41 @@ from collections import defaultdict
 from pathlib import Path
 
 
-def bugs_by_project(csv_path, last):
-    by_project = defaultdict(list)
-    with open(csv_path, newline='') as f:
-        for row in csv.DictReader(f):
-            by_project[row['project'].strip()].append(row['bug_id'].strip())
-    if last:
-        for p in by_project:
-            by_project[p] = sorted(by_project[p], key=int, reverse=True)[:last]
-    return by_project
+def bugs_by_project(csv_paths, last):
+    """{project: [bug ids]} from one or more comma-separated CSV paths.
+
+    bugs_last10.csv leaves out each project's LATEST bug (gen_bugs_all_csv.py
+    skipped the one already in bugs.csv, the original one-bug-per-project
+    run), so the default reads both files. Only projects in the first CSV
+    are kept; missing files are skipped. With `last`, each project keeps its
+    `last` highest bug ids.
+    """
+    paths = [c.strip() for c in csv_paths.split(',') if c.strip()]
+    by_project = defaultdict(set)
+    projects = None
+    for i, path in enumerate(paths):
+        if not Path(path).exists():
+            continue
+        with open(path, newline='') as f:
+            for row in csv.DictReader(f):
+                p, b = row['project'].strip(), row['bug_id'].strip()
+                if i > 0 and projects is not None and p not in projects:
+                    continue
+                if b.isdigit():
+                    by_project[p].add(b)
+        if i == 0:
+            projects = set(by_project)
+    result = {}
+    for p, ids in by_project.items():
+        ids = sorted(ids, key=int, reverse=True)
+        result[p] = ids[:last] if last else ids
+    return result
 
 
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--last', type=int, default=None)
-    ap.add_argument('--csv', default='bugs_last10.csv')
+    ap.add_argument('--csv', default='bugs_last10.csv,bugs.csv')
     args = ap.parse_args()
     by_project = bugs_by_project(args.csv, args.last)
 
