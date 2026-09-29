@@ -412,8 +412,9 @@ def _inv_marker(inv: Path) -> Path:
 def print_invariants(daikon_jar: str, inv_file: Path) -> str:
     cmd = ["java", f"-Xmx{JAVA_XMX}", "-cp", daikon_jar, "daikon.PrintInvariants", str(inv_file)]
     # 10 min was too tight a cap for the largest .inv files; a timeout here
-    # would throw away an otherwise completed multi-hour run.
-    return capture(cmd, timeout=3 * 3600)
+    # would throw away an otherwise completed multi-hour run. 3h was too
+    # tight for JacksonXml-3's invFull; the job walltime is the real limit.
+    return capture(cmd, timeout=24 * 3600)
 
 
 def main():
