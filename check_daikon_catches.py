@@ -1,11 +1,14 @@
 #!/usr/bin/env python3
 """List the Daikon bugs with at least one FALSIFIED invariant (RQ5).
 
-Usage:
-    python3 check_daikon_catches.py [--last N] [--csv bugs_last10.csv,bugs.csv]
+Prints one section for the latest 5 bugs of each project and one for the
+latest 10: each exposed bug with its number of FALSIFIED invariants and the
+invariants themselves, then a per-bug count table and totals.
 
---last N restricts each project to its N highest bug ids in the CSV (e.g.
---last 5 for the latest 5 bugs); without it every bug in the CSV is used.
+Usage:
+    python3 check_daikon_catches.py [--last N] [--no-invariants] [--csv bugs_last10.csv,bugs.csv]
+
+--last N prints only that scope; --no-invariants omits the invariant lines.
 """
 import argparse
 import csv
@@ -45,45 +48,59 @@ def bugs_by_project(csv_paths, last):
     return result
 
 
-def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument('--last', type=int, default=None)
-    ap.add_argument('--csv', default='bugs_last10.csv,bugs.csv')
-    args = ap.parse_args()
-    by_project = bugs_by_project(args.csv, args.last)
+def falsified_records(p, bid):
+    """FALSIFIED records of one bug, or None if Daikon has no result."""
+    out_file = Path('outputs_usefulness') / f'{p}_{bid}' / 'daikon_outcomes.jsonl'
+    if not out_file.exists():
+        return None
+    recs = []
+    with open(out_file) as f:
+        for line in f:
+            line = line.strip()
+            if line:
+                rec = json.loads(line)
+                if rec['verdict'] == 'FALSIFIED':
+                    recs.append(rec)
+    return recs
 
-    total_bugs_checked = 0
-    total_with_catch = 0
-    total_falsified = 0
 
+def report(by_project, label, list_invariants):
+    print(f'######## {label} ########')
+    checked, exposed = 0, []
     for p in sorted(by_project):
         for bid in by_project[p]:
-            out_file = Path('outputs_usefulness') / f'{p}_{bid}' / 'daikon_outcomes.jsonl'
-            if not out_file.exists():
+            recs = falsified_records(p, bid)
+            if recs is None:
                 continue
-            total_bugs_checked += 1
-            falsified = []
-            with open(out_file) as f:
-                for line in f:
-                    line = line.strip()
-                    if not line:
-                        continue
-                    rec = json.loads(line)
-                    if rec['verdict'] == 'FALSIFIED':
-                        falsified.append(rec)
-            if falsified:
-                total_with_catch += 1
-                total_falsified += len(falsified)
-                print(f'{p}_{bid}: {len(falsified)} FALSIFIED invariant(s)')
-                for rec in falsified:
-                    print(f"    ppt={rec['ppt']}  inv={rec['invariant']}")
-
+            checked += 1
+            if recs:
+                exposed.append((f'{p}_{bid}', len(recs)))
+                print(f'{p}_{bid}: {len(recs)} FALSIFIED invariant(s)')
+                if list_invariants:
+                    for rec in recs:
+                        print(f"    ppt={rec['ppt']}  inv={rec['invariant']}")
     print()
-    print('==== TOTAL' + (f' (latest {args.last} bugs per project)' if args.last else '') + ' ====')
+    print(f'---- falsified invariants per exposed bug ({label}) ----')
+    for name, n in exposed:
+        print(f'  {name:<24} {n}')
+    print(f'==== TOTAL ({label}) ====')
     print(f'bugs in scope:                                {sum(len(v) for v in by_project.values())}')
-    print(f'bugs checked (daikon_outcomes.jsonl present): {total_bugs_checked}')
-    print(f'bugs with at least one FALSIFIED invariant:   {total_with_catch}')
-    print(f'total FALSIFIED invariant records:            {total_falsified}')
+    print(f'bugs checked (daikon_outcomes.jsonl present): {checked}')
+    print(f'bugs with at least one FALSIFIED invariant:   {len(exposed)}')
+    print(f'total FALSIFIED invariant records:            {sum(n for _, n in exposed)}')
+    print()
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument('--last', type=int, default=None,
+                    help='only this scope (default: a section for latest 5 and one for latest 10)')
+    ap.add_argument('--csv', default='bugs_last10.csv,bugs.csv')
+    ap.add_argument('--no-invariants', action='store_true',
+                    help='print only the per-bug counts, not every falsified invariant')
+    args = ap.parse_args()
+    for n in ([args.last] if args.last else [5, 10]):
+        report(bugs_by_project(args.csv, n), f'LATEST {n} BUGS PER PROJECT', not args.no_invariants)
 
 
 if __name__ == '__main__':
