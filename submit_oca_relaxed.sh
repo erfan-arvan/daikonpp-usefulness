@@ -117,6 +117,12 @@ if [[ -n "${SLURM_ARRAY_TASK_ID:-}" ]]; then
   # waiting for each other -- confirmed directly: "Timeout waiting to lock
   # journal cache (~/.gradle/caches/journal-1)". Giving each task its own
   # GRADLE_USER_HOME removes the shared lock entirely.
+  # The relaxed flags only exist from daikonplusplus 2d7ca57 on; refuse to
+  # run on an older copy (they would be silently ignored).
+  if ! git -C "$DPP_DIR" merge-base --is-ancestor 2d7ca57 HEAD 2>/dev/null; then
+    echo "ERROR: $DPP_DIR ($(git -C "$DPP_DIR" log --oneline -1)) lacks 2d7ca57; update $CANONICAL_DPP_DIR and delete $DPP_DIR"
+    exit 1
+  fi
   export GRADLE_USER_HOME="${BUILD_ROOT:-$ROOT}/gradle-home-relaxed-task-${SLURM_ARRAY_TASK_ID}"
   mkdir -p "$GRADLE_USER_HOME"
 fi
