@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""List the Daikon bugs with at least one FALSIFIED invariant (RQ5).
+"""List the Daikon bugs with at least one FALSIFIED invariant (RQ5) in the
+OLD text-diff results (outputs_usefulness/<bug>/daikon_outcomes.jsonl).
+These are raw candidates, not validated detections: see
+summarize_daikon_strict_batch.py for checker / fixed-validated / strict
+counts. Projects in DROPPED_PROJECTS are left out.
 
 Prints one section for the latest 5 bugs of each project and one for the
 latest 10: each exposed bug with its number of FALSIFIED invariants and the
@@ -17,14 +21,20 @@ from collections import defaultdict
 from pathlib import Path
 
 
-def bugs_by_project(csv_paths, last):
+# Projects removed from the dataset: none of their latest-5 bugs can finish
+# the Daikon checker/fixed/strict pipeline within 72 h. Every stats script
+# leaves them out (pass exclude=() to include them).
+DROPPED_PROJECTS = ('Csv', 'JacksonDatabind', 'JacksonXml')
+
+
+def bugs_by_project(csv_paths, last, exclude=DROPPED_PROJECTS):
     """{project: [bug ids]} from one or more comma-separated CSV paths.
 
     bugs_last10.csv leaves out each project's LATEST bug (gen_bugs_all_csv.py
     skipped the one already in bugs.csv, the original one-bug-per-project
     run), so the default reads both files. Only projects in the first CSV
     are kept; missing files are skipped. With `last`, each project keeps its
-    `last` highest bug ids.
+    `last` highest bug ids. Projects in `exclude` are left out.
     """
     paths = [c.strip() for c in csv_paths.split(',') if c.strip()]
     by_project = defaultdict(set)
@@ -43,6 +53,8 @@ def bugs_by_project(csv_paths, last):
             projects = set(by_project)
     result = {}
     for p, ids in by_project.items():
+        if p in exclude:
+            continue
         ids = sorted(ids, key=int, reverse=True)
         result[p] = ids[:last] if last else ids
     return result
@@ -65,7 +77,7 @@ def falsified_records(p, bid):
 
 
 def report(by_project, label, list_invariants):
-    print(f'######## {label} ########')
+    print(f'######## {label} (old text-diff; excluded projects: {", ".join(DROPPED_PROJECTS)}) ########')
     checked, exposed = 0, []
     for p in sorted(by_project):
         for bid in by_project[p]:

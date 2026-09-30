@@ -3,14 +3,15 @@
 
 "Latest" includes each project's newest bug: bugs_last10.csv leaves it out
 (it is in bugs.csv), so both files are read -- see
-check_daikon_catches.bugs_by_project. A bug counts as done when
+check_daikon_catches.bugs_by_project; DROPPED_PROJECTS are left out. A bug counts as done when
 outputs_usefulness/<Project>_<Bug>/daikon_outcomes.jsonl exists.
 """
 from pathlib import Path
 
-from check_daikon_catches import bugs_by_project
+from check_daikon_catches import DROPPED_PROJECTS, bugs_by_project
 
 bp = bugs_by_project('bugs_last10.csv,bugs.csv', 10)
+print(f'excluded projects: {", ".join(DROPPED_PROJECTS)}')
 print(f'{"project":<16}{"latest5":>9}{"latest10":>10}')
 for p in sorted(bp):
     done = [(Path('outputs_usefulness') / f'{p}_{b}' / 'daikon_outcomes.jsonl').exists() for b in bp[p]]

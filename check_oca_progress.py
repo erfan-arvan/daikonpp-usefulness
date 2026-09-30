@@ -1,49 +1,62 @@
 #!/usr/bin/env python3
-"""Per-project progress check for the Oca (daikonplusplus) side of the RQ5
-usefulness experiment -- the Oca-side twin of check_daikon_progress.py.
+"""Per-project progress of the Oca (daikonplusplus) runs of the RQ5
+usefulness experiment over the latest 5 and latest 10 bugs of each project
+-- the Oca-side twin of check_daikon_progress.py.
 
-A bug counts as done once its outputs_usefulness/<PROJECT>_<BUG>/RUN_COMPLETE
-marker exists (written by run_usefulness_bug.py on a successful run).
+The bug set is bugs_last10.csv + bugs.csv (bugs_last10.csv alone lacks each
+project's newest bug), without check_daikon_catches.DROPPED_PROJECTS. A bug
+counts as done only when oca_status.py confirms its run finished (the
+marker run_usefulness_bug.py writes itself, or its job log); unverified,
+failed and incomplete runs are counted separately.
 
 Usage:
-    python3 check_oca_progress.py [bugs_last10.csv] [--missing]
+    python3 check_oca_progress.py [--out-root outputs_usefulness] [--csv bugs_last10.csv,bugs.csv] [--missing]
 
---missing also lists the specific bug_ids still outstanding per project.
+--missing also lists the bug ids that are not complete, by state.
 """
 from __future__ import annotations
 
-import csv
-import sys
-from collections import defaultdict
+import argparse
 from pathlib import Path
 
-ROOT = Path.cwd()
+from check_daikon_catches import DROPPED_PROJECTS, bugs_by_project
+from oca_status import oca_status
+
+STATES = ("complete", "unverified", "failed", "incomplete", "not_started")
+
+
+def report(out_root: Path, csv_paths: str, show_missing: bool):
+    for n in (5, 10):
+        bp = bugs_by_project(csv_paths, n)
+        print(f"######## {out_root} -- LATEST {n} BUGS PER PROJECT (excluded: {', '.join(DROPPED_PROJECTS)}) ########")
+        print(f'{"project":<16}{"complete":>10}{"unverified":>11}{"failed":>8}{"incomplete":>11}{"not started":>12}')
+        tot = dict.fromkeys(STATES, 0)
+        n_all = 0
+        for p in sorted(bp):
+            by_state = {s: [] for s in STATES}
+            for b in bp[p]:
+                by_state[oca_status(out_root / f"{p}_{b}")[0]].append(b)
+            n_all += len(bp[p])
+            for s in STATES:
+                tot[s] += len(by_state[s])
+            print(f'{p:<16}{len(by_state["complete"]):>6}/{len(bp[p]):<3}{len(by_state["unverified"]):>11}'
+                  f'{len(by_state["failed"]):>8}{len(by_state["incomplete"]):>11}{len(by_state["not_started"]):>12}')
+            if show_missing:
+                for s in STATES[1:]:
+                    if by_state[s]:
+                        print(f'    {s}: {",".join(by_state[s])}')
+        print(f'{"TOTAL":<16}{tot["complete"]:>6}/{n_all:<3}{tot["unverified"]:>11}{tot["failed"]:>8}'
+              f'{tot["incomplete"]:>11}{tot["not_started"]:>12}')
+        print()
 
 
 def main():
-    args = [a for a in sys.argv[1:] if not a.startswith("--")]
-    show_missing = "--missing" in sys.argv[1:]
-    csv_path = Path(args[0]) if args else ROOT / "bugs_last10.csv"
-
-    if not csv_path.exists():
-        sys.exit(f"ERROR: CSV not found: {csv_path}")
-
-    by_project: dict[str, list[str]] = defaultdict(list)
-    with open(csv_path, newline="") as f:
-        for row in csv.DictReader(f):
-            by_project[row["project"].strip()].append(row["bug_id"].strip())
-
-    for project in sorted(by_project):
-        bug_ids = by_project[project]
-        missing = [
-            bid for bid in bug_ids
-            if not (ROOT / "outputs_usefulness" / f"{project}_{bid}" / "RUN_COMPLETE").exists()
-        ]
-        done = len(bug_ids) - len(missing)
-        line = f"{project}: {done}/{len(bug_ids)}"
-        if show_missing and missing:
-            line += f"  MISSING: {missing}"
-        print(line)
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--out-root", default="outputs_usefulness")
+    ap.add_argument("--csv", default="bugs_last10.csv,bugs.csv")
+    ap.add_argument("--missing", action="store_true")
+    args = ap.parse_args()
+    report(Path(args.out_root), args.csv, args.missing)
 
 
 if __name__ == "__main__":
