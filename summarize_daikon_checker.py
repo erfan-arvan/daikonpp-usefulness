@@ -13,10 +13,14 @@ For each bug:
          stock checker's path) / propagated (OBJECT/CLASS)
   diag   candidates an unmatched-ENTER sample (a call that never returned)
          would violate -- diagnostic only, never part of a verdict
-  base   FALSIFIED when invA is checked against traceA itself (expected 0)
+  inc    candidates classified UNCHECKABLE / inconsistent_with_inference_trace
+         (violated on traceA, the samples they were inferred from)
+  base   FALSIFIED when invA is checked against traceA itself (expected 0);
+         any nonzero baseline is flagged "REQUIRES INVESTIGATION"
   null   FALSIFIED from <out-root>/null/<P>_<B>/, split the same way
-  a few FALSIFIED invariants with their violating samples, and every
-  baseline violation
+  a few FALSIFIED invariants with their violating samples, every baseline
+  violation, and a candidate-identity comparison of the baseline, null and
+  normal results (keys are (ppt, invariant text))
 
 Completed runs (CHECKER_COMPLETE present, including runs with zero results)
 are listed apart from incomplete / failed / not-run ones. Runs written by an
@@ -64,8 +68,8 @@ def run_state(d: Path):
         return "not run", None, None
     info = json.loads((d / "run_info.json").read_text()) if (d / "run_info.json").is_file() else {}
     if (d / "CHECKER_COMPLETE").is_file() and (d / "daikon_checker_outcomes.jsonl").is_file():
-        if "baseline_A" not in info:
-            return "old checker format (unmatched ENTERs in verdicts) -- run recheck", None, None
+        if "requires_investigation" not in info.get("baseline_A", {}):
+            return "old checker format -- run recheck", None, None
         return "complete", read_jsonl(d / "daikon_checker_outcomes.jsonl"), info
     if info.get("error"):
         return f"failed: {info['error'][:160]}", None, None
@@ -86,6 +90,14 @@ def origin_str(outcomes: list[dict]) -> str:
 
 def n_diag(outcomes: list[dict]) -> int:
     return sum(1 for o in outcomes if any(o.get(f"diag_violations_{g}", 0) for g in DIAG_ORIGINS))
+
+
+def n_inc(outcomes: list[dict]) -> int:
+    return sum(1 for o in outcomes if o.get("reason") == "inconsistent_with_inference_trace")
+
+
+def keys(outcomes, pred) -> set:
+    return {(o["ppt"], o["invariant"]) for o in outcomes if pred(o)}
 
 
 def short_state(state: str) -> str:
@@ -123,17 +135,26 @@ def main():
     oh = "/".join(SHORT[g] for g in ORIGINS)
     print("######## COMPLETED (normal run finished; zero counts are real zeros) ########")
     print(f'{"bug":<12}{"old":>5}{"ppt-miss":>9}{"ppt-pres":>9} |{"FALS":>5} {oh:>8}{"HELD":>6}{"UNEX":>5}{"MISS":>5}'
-          f'{"UNCHK":>6}{"diag":>5}{"base":>5} |{"null":>8} {oh:>8}{"diag":>5}{"base":>5}')
+          f'{"UNCHK":>6}{"inc":>5}{"diag":>5}{"base":>6} |{"null":>8} {oh:>8}{"inc":>5}{"base":>6}')
+    flagged = []
+
+    def base_col(inf, label, bug):
+        b = inf["baseline_A"]["counts"]["FALSIFIED"]
+        if b:
+            flagged.append((bug, label, inf["baseline_A"]))
+        return f"{b}{'!' if b else ''}"
+
     for bug, (_, outcomes, info), (nstate, noutcomes, ninfo), old in complete:
         c = counts(outcomes)
-        base = info["baseline_A"]["counts"]["FALSIFIED"]
+        base = base_col(info, "normal", bug)
         if noutcomes is not None:
-            nc = f"{counts(noutcomes)['FALSIFIED']:>8} {origin_str(noutcomes):>8}{n_diag(noutcomes):>5}" \
-                 f"{ninfo['baseline_A']['counts']['FALSIFIED']:>5}"
+            nc = f"{counts(noutcomes)['FALSIFIED']:>8} {origin_str(noutcomes):>8}{n_inc(noutcomes):>5}" \
+                 f"{base_col(ninfo, 'null', bug):>6}"
         else:
             nc = f"{short_state(nstate):>8}"
         print(f"{bug:<12}{old_cols(old)} |{c['FALSIFIED']:>5} {origin_str(outcomes):>8}{c['HELD']:>6}"
-              f"{c['UNEXERCISED']:>5}{c['UNEVALUATED_MISSING']:>5}{c['UNCHECKABLE']:>6}{n_diag(outcomes):>5}{base:>5} |{nc}")
+              f"{c['UNEXERCISED']:>5}{c['UNEVALUATED_MISSING']:>5}{c['UNCHECKABLE']:>6}{n_inc(outcomes):>5}"
+              f"{n_diag(outcomes):>5}{base:>6} |{nc}")
     if not complete:
         print("  (none)")
     print("  old = daikon_outcomes.jsonl FALSIFIED (text diff); ppt-miss / ppt-pres = its ppt absent from / present in")
@@ -141,7 +162,20 @@ def main():
     print(f"  FALS ({oh} = direct, the stock checker's path / propagated to OBJECT-CLASS), HELD, UNEX (ppt never")
     print("  reached), MISS (UNEVALUATED_MISSING: reached, but every sample had a missing/out-of-bounds variable),")
     print("  UNCHK. diag = candidates an unmatched ENTER (call never returned) would violate: NOT in any verdict.")
-    print("  base = FALSIFIED when invA is checked against traceA itself (expected 0).")
+    print("  inc = UNCHECKABLE because violated on its own inference trace (inconsistent_with_inference_trace).")
+    print("  base = FALSIFIED when invA is checked against traceA itself (expected 0); '!' = requires investigation.")
+    print()
+
+    print("######## BASELINE VIOLATIONS -- REQUIRE INVESTIGATION ########")
+    if not flagged:
+        print("  (none: every completed run has 0 baseline violations)")
+    for bug, label, b in flagged:
+        classes = {}
+        for o in b["falsified"]:
+            k = (o.get("daikon_class") or "?").split(".")[-1]
+            classes[k] = classes.get(k, 0) + 1
+        print(f"{bug:<12} {label:<6} baseline FALSIFIED={b['counts']['FALSIFIED']}  "
+              f"all-NaN-only={b.get('falsified_all_nan_only', '?')}  by class={dict(sorted(classes.items()))}")
     print()
 
     print("######## INCOMPLETE / FAILED / NOT RUN ########")
@@ -189,11 +223,34 @@ def main():
             if inf is None:
                 continue
             bf = inf["baseline_A"]["falsified"]
-            print(f"    baseline ({label}, invA vs traceA): {len(bf)} FALSIFIED")
-            for o in bf:
+            print(f"    baseline ({label}, invA vs traceA): {len(bf)} FALSIFIED"
+                  f"{' -- REQUIRES INVESTIGATION' if bf else ''}")
+            for o in bf[: args.examples * 5]:
                 vals = "; ".join(", ".join(f"{k}={v}" for k, v in s["values"].items()) for s in o["violating_samples"])
                 print(f"        {o['ppt']} :: {o['invariant']}   ({o['falsified_by']}, {o['violations']} of "
-                      f"{o['evaluations']})  {vals}")
+                      f"{o['evaluations']}, all-NaN {o.get('violations_all_nan', '?')})  {vals}")
+            if len(bf) > args.examples * 5:
+                print(f"        ... {len(bf) - args.examples * 5} more (run_info.json: baseline_A.falsified)")
+        # candidate identities across baseline, null and normal
+        raw_n = keys(outcomes, lambda o: o.get("raw_verdict") == "FALSIFIED")
+        fin_n = keys(outcomes, lambda o: o["verdict"] == "FALSIFIED")
+        base_n = {(o["ppt"], o["invariant"]) for o in info["baseline_A"]["falsified"]}
+        print(f"    identity: normal raw FALSIFIED={len(raw_n)}, of which baseline-violated={len(raw_n & base_n)}; "
+              f"final FALSIFIED={len(fin_n)}")
+        if noutcomes is not None:
+            raw_u = keys(noutcomes, lambda o: o.get("raw_verdict") == "FALSIFIED")
+            fin_u = keys(noutcomes, lambda o: o["verdict"] == "FALSIFIED")
+            base_u = {(o["ppt"], o["invariant"]) for o in ninfo["baseline_A"]["falsified"]}
+            cand_n, cand_u = keys(outcomes, lambda o: True), keys(noutcomes, lambda o: True)
+            print(f"    identity: candidates normal={len(cand_n)} null={len(cand_u)} shared={len(cand_n & cand_u)}; "
+                  f"baselines normal={len(base_n)} null={len(base_u)} shared={len(base_n & base_u)}")
+            print(f"    identity: null raw FALSIFIED={len(raw_u)}, of which baseline-violated={len(raw_u & base_u)}; "
+                  f"final null FALSIFIED={len(fin_u)}")
+            print(f"    identity: final FALSIFIED in both normal and null={len(fin_n & fin_u)} "
+                  f"(noise that survives the baseline filter); normal-only={len(fin_n - fin_u)}; "
+                  f"normal raw FALSIFIED also raw in null={len(raw_n & raw_u)}")
+            for k in sorted(fin_n & fin_u)[: args.examples]:
+                print(f"        both: {k[0]} :: {k[1]}")
         if noutcomes is not None:
             nf = [o for o in noutcomes if o["verdict"] == "FALSIFIED"]
             print(f"    null run: {len(nf)} FALSIFIED of {len(noutcomes)} candidates ({oh} {origin_str(noutcomes)})")

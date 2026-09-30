@@ -83,6 +83,7 @@ public class DaikonCandidateChecker {
     long evaluations = 0;
     long violationsDirect = 0;
     long violationsPropagated = 0;
+    long violationsAllNaN = 0; // eligible violations where every compared value is NaN
     long skippedMissing = 0; // eligible sample skipped: a variable's value is missing
     long skippedOutOfBounds = 0; // eligible sample skipped: a derived variable is out of bounds
     List<String> firstViolations = new ArrayList<>();
@@ -253,6 +254,7 @@ public class DaikonCandidateChecker {
             num(sb, "violations", s.violationsDirect + s.violationsPropagated);
             num(sb, "violations_direct", s.violationsDirect);
             num(sb, "violations_propagated", s.violationsPropagated);
+            num(sb, "violations_all_nan", s.violationsAllNaN);
             num(sb, "skipped_missing", s.skippedMissing);
             num(sb, "skipped_out_of_bounds", s.skippedOutOfBounds);
             list(sb, "first_violations", s.firstViolations).append(',');
@@ -411,6 +413,9 @@ public class DaikonCandidateChecker {
           } else {
             s.evaluations++;
             if (violated) {
+              if (allNaN(slice, vt)) {
+                s.violationsAllNaN++;
+              }
               if (propagated) {
                 s.violationsPropagated++;
               } else {
@@ -474,6 +479,30 @@ public class DaikonCandidateChecker {
       return ((TernaryInvariant) inv)
           .check(vt.getValue(v1), vt.getValue(v2), vt.getValue(v3), vt.getModified(v1), 1);
     }
+  }
+
+  /**
+   * True if every value of the slice's variables in this sample is NaN (a double, or a non-empty
+   * double[] of only NaNs). Diagnostic only: such a violation is still a violation.
+   */
+  static boolean allNaN(PptSlice slice, ValueTuple vt) {
+    for (VarInfo v : slice.var_infos) {
+      Object val = vt.getValueOrNull(v);
+      if (val instanceof Double) {
+        if (!((Double) val).isNaN()) {
+          return false;
+        }
+      } else if (val instanceof double[] && ((double[]) val).length > 0) {
+        for (double d : (double[]) val) {
+          if (!Double.isNaN(d)) {
+            return false;
+          }
+        }
+      } else {
+        return false;
+      }
+    }
+    return true;
   }
 
   static String violation(PptSlice slice, ValueTuple vt, InvariantStatus status, String origin) {

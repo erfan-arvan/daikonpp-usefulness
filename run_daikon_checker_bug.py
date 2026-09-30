@@ -45,8 +45,24 @@ text at the same ppt). Verdicts:
                        variable was missing (nonsensical/flow) or out of
                        bounds, so it was never evaluated
   UNCHECKABLE          could not be mapped to exactly one active invariant of
-                       invA (e.g. implications, ambiguous text), or the stock
-                       checker and the wrapper disagree on its own path
+                       invA (e.g. implications, ambiguous text), the stock
+                       checker and the wrapper disagree on its own path, or
+                       reason "inconsistent_with_inference_trace": the
+                       invariant is violated on traceA, the very samples it
+                       was inferred from (see below)
+
+Inference/check inconsistency. Daikon can print invariants that its own
+check rejects on its training samples. Known case, confirmed with the stock
+InvariantChecker: PptSliceEquality.createEqualityInvs regroups variables
+split off an equality set in a HashMap keyed by the boxed value, and
+Double.equals(NaN, NaN) is true, so variables that are NaN together in one
+sample are put in one equality set; Daikon then prints "a == b", which
+FloatEqual (fuzzy NaN != NaN) rejects on that same sample. The baseline
+check (invA vs traceA) finds every such candidate, whatever the cause; they
+get verdict UNCHECKABLE with reason inconsistent_with_inference_trace, in
+the normal and in the null run. Their raw_verdict and all counts are kept
+(violations_all_nan counts violations where every compared value is NaN).
+NaN is never ignored and NaN equality is never forced to pass.
 
 Eligible violation origins (falsified_by is the first nonzero):
   direct       a sample of this ppt (or EXITnn -> EXIT) -- what the stock
@@ -344,9 +360,13 @@ def load_records(path: Path) -> list[dict]:
         return [json.loads(l) for l in f if l.strip()]
 
 
-def classify(invariants_a_text: str, records: list[dict], stock_failed: set | None) -> tuple[list[dict], dict]:
+def classify(invariants_a_text: str, records: list[dict], stock_failed: set | None,
+             baseline_bad: dict | None = None) -> tuple[list[dict], dict]:
     """One outcome per candidate: every (ppt, printed line) of invariantsA.txt
-    that is_overfit_prone_invariant() does not exclude."""
+    that is_overfit_prone_invariant() does not exclude. `baseline_bad` maps
+    (ppt, invariant) of candidates FALSIFIED on traceA itself to that
+    baseline outcome; those become UNCHECKABLE (inconsistent_with_inference_trace)."""
+    baseline_bad = baseline_bad or {}
     by_printed: dict[tuple[str, str], list[dict]] = {}
     by_format: dict[tuple[str, str], list[dict]] = {}
     for r in records:
@@ -396,12 +416,23 @@ def classify(invariants_a_text: str, records: list[dict], stock_failed: set | No
                 **{f"violations_{o}": r[f"violations_{o}"] for o in ORIGINS},
                 "skipped_missing": r["skipped_missing"],
                 "skipped_out_of_bounds": r["skipped_out_of_bounds"],
+                "violations_all_nan": r.get("violations_all_nan"),
                 "violating_samples": r["first_violations"],
                 # diagnostics: never used for the verdict
                 "diag_evaluations_unmatched_entry": r["diag_evaluations_unmatched_entry"],
                 **{f"diag_violations_{o}": r[f"diag_violations_{o}"] for o in DIAG_ORIGINS},
                 "diag_violating_samples": r["first_diag_violations"],
             }
+            # the verdict the samples alone give
+            if r["violations"] > 0:
+                raw = {"verdict": "FALSIFIED", "falsified_by": next(o for o in ORIGINS if r[f"violations_{o}"] > 0)}
+            elif r["evaluations"] > 0:
+                raw = {"verdict": "HELD"}
+            elif r["skipped_missing"] + r["skipped_out_of_bounds"] > 0:
+                raw = {"verdict": "UNEVALUATED_MISSING"}
+            else:
+                raw = {"verdict": "UNEXERCISED"}
+            info["raw_verdict"] = raw["verdict"]
             if not r["active"]:
                 outcomes.append({**row, "verdict": "UNCHECKABLE", "reason": "invariant is not active", **info})
             elif (r["ppt"], r["format"]) in disagree:
@@ -409,15 +440,16 @@ def classify(invariants_a_text: str, records: list[dict], stock_failed: set | No
                        if (r["ppt"], r["format"]) in stock_only else
                        "wrapper reports a direct violation the stock InvariantChecker does not")
                 outcomes.append({**row, "verdict": "UNCHECKABLE", "reason": why, **info})
-            elif r["violations"] > 0:
-                by = next(o for o in ORIGINS if r[f"violations_{o}"] > 0)
-                outcomes.append({**row, "verdict": "FALSIFIED", "falsified_by": by, **info})
-            elif r["evaluations"] > 0:
-                outcomes.append({**row, "verdict": "HELD", **info})
-            elif r["skipped_missing"] + r["skipped_out_of_bounds"] > 0:
-                outcomes.append({**row, "verdict": "UNEVALUATED_MISSING", **info})
+            elif (ppt, text) in baseline_bad:
+                b = baseline_bad[(ppt, text)]
+                outcomes.append({**row, "verdict": "UNCHECKABLE", "reason": "inconsistent_with_inference_trace",
+                                 "baseline_violations": b["violations"], "baseline_evaluations": b["evaluations"],
+                                 "baseline_violations_all_nan": b.get("violations_all_nan"),
+                                 "baseline_violating_samples": b["violating_samples"][:2],
+                                 **({"raw_falsified_by": raw["falsified_by"]} if "falsified_by" in raw else {}),
+                                 **info})
             else:
-                outcomes.append({**row, "verdict": "UNEXERCISED", **info})
+                outcomes.append({**row, **raw, **info})
 
     cross = {
         "stock_checked": stock_failed is not None,
@@ -440,11 +472,15 @@ def tally(outcomes: list[dict]) -> dict:
         "falsified_by": {g: sum(1 for o in outcomes if o.get("falsified_by") == g) for g in ORIGINS},
         # candidates an unmatched ENTER sample would have violated, by their (eligible) verdict
         "diag_unmatched_entry_candidates": {v: sum(1 for o in diag if o["verdict"] == v) for v in VERDICTS},
+        "inconsistent_with_inference_trace": sum(1 for o in outcomes
+                                                 if o.get("reason") == "inconsistent_with_inference_trace"),
+        "inconsistent_raw_verdicts": {v: sum(1 for o in outcomes if o.get("reason") == "inconsistent_with_inference_trace"
+                                             and o.get("raw_verdict") == v) for v in VERDICTS},
     }
 
 
 def check_one(daikon_jar, checker_classes: Path, inv: Path, invariants_a_text: str, trace: Path,
-              dest: Path, logs: Path, tag: str, max_violations: int) -> dict:
+              dest: Path, logs: Path, tag: str, max_violations: int, baseline_bad: dict | None = None) -> dict:
     """invA against one trace: wrapper + stock checker + classification, all
     outputs in `dest`. Returns tally + cross-check + checker summary."""
     dest.mkdir(parents=True, exist_ok=True)
@@ -452,7 +488,7 @@ def check_one(daikon_jar, checker_classes: Path, inv: Path, invariants_a_text: s
                                              logs / f"checker_wrapper{tag}.log", max_violations)
     stock_failed, unparsed = parse_stock(
         run_stock_checker(daikon_jar, inv, trace, dest, logs / f"stock_checker{tag}.log"))
-    outcomes, cross = classify(invariants_a_text, load_records(records_path), stock_failed)
+    outcomes, cross = classify(invariants_a_text, load_records(records_path), stock_failed, baseline_bad)
     cross["stock_unparsed_lines"] = unparsed
     write_outcomes(dest / "daikon_checker_outcomes.jsonl", outcomes)
     return {**tally(outcomes), "cross_check": cross,
@@ -461,21 +497,29 @@ def check_one(daikon_jar, checker_classes: Path, inv: Path, invariants_a_text: s
 
 def run_checks(daikon_jar, out_dir: Path, inv_a: Path, invariants_a: Path, trace_a: Path, trace_b: Path,
                logs: Path, info: dict, max_violations: int):
-    """Checks invA against trace B (-> out_dir) and against traceA itself
-    (baseline -> out_dir/baseline_A), updates `info`, then writes
-    run_info.json and, last, the completion marker."""
+    """Checks invA against traceA itself (baseline -> out_dir/baseline_A)
+    first, then against trace B (-> out_dir) with every candidate the
+    baseline FALSIFIED classified as inconsistent_with_inference_trace;
+    updates `info`, then writes run_info.json and, last, the completion
+    marker."""
     checker_classes = compile_checker(daikon_jar, out_dir / "checker-classes", logs / "javac_checker.log")
     text = invariants_a.read_text(errors="replace")
-    res = check_one(daikon_jar, checker_classes, inv_a, text, trace_b, out_dir, logs, "", max_violations)
     base = check_one(daikon_jar, checker_classes, inv_a, text, trace_a, out_dir / "baseline_A", logs, "_baseline_A",
                      max_violations)
+    base_outcomes = base.pop("_outcomes")
     base_fals = [{"ppt": o["ppt"], "invariant": o["invariant"], "falsified_by": o["falsified_by"],
                   "violations": o["violations"], "evaluations": o["evaluations"],
+                  "violations_all_nan": o.get("violations_all_nan"), "daikon_class": o.get("daikon_class"),
                   "violating_samples": o["violating_samples"][:2]}
-                 for o in base.pop("_outcomes") if o["verdict"] == "FALSIFIED"]
+                 for o in base_outcomes if o["verdict"] == "FALSIFIED"]
+    baseline_bad = {(o["ppt"], o["invariant"]): o for o in base_fals}
+    res = check_one(daikon_jar, checker_classes, inv_a, text, trace_b, out_dir, logs, "", max_violations, baseline_bad)
     res.pop("_outcomes")
     info.update(res)
-    info["baseline_A"] = {**base, "falsified": base_fals}
+    info["baseline_A"] = {**base, "falsified": base_fals,
+                          "falsified_all_nan_only": sum(1 for o in base_fals
+                                                        if o["violations_all_nan"] == o["violations"]),
+                          "requires_investigation": bool(base_fals)}
     write_atomic(out_dir / "run_info.json", json.dumps(info, indent=1))
     write_atomic(out_dir / COMPLETE, json.dumps({"finished": datetime.datetime.now().isoformat(),
                                                  **res["counts"]}) + "\n")
@@ -484,7 +528,11 @@ def run_checks(daikon_jar, out_dir: Path, inv_a: Path, invariants_a: Path, trace
     print(f"    FALSIFIED by origin: {res['falsified_by']}")
     print(f"    diagnostic (unmatched ENTER, not in verdicts): candidates it would violate, by verdict: "
           f"{res['diag_unmatched_entry_candidates']}")
-    print(f"    baseline invA vs traceA: {base['counts']['FALSIFIED']} FALSIFIED of {base['candidates']} candidates")
+    print(f"    baseline invA vs traceA: {base['counts']['FALSIFIED']} FALSIFIED of {base['candidates']} candidates"
+          f" ({info['baseline_A']['falsified_all_nan_only']} with only all-NaN violations)"
+          f"{'  -- REQUIRES INVESTIGATION' if base_fals else ''}")
+    print(f"    classified inconsistent_with_inference_trace: {res['inconsistent_with_inference_trace']} "
+          f"(raw verdicts on trace B: {res['inconsistent_raw_verdicts']})")
     for o in base_fals[:10]:
         print(f"      BASELINE VIOLATION {o['ppt']} :: {o['invariant']} ({o['falsified_by']}, {o['violations']})")
     for label, r in (("check", res), ("baseline", base)):
