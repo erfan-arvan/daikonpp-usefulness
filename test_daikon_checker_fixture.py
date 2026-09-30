@@ -13,9 +13,10 @@ from A only by a few extra calls, so the expected verdicts are known:
   unexercised ppt  Calc.onlyA ENTER "a < b"           UNEXERCISED (never called in B)
   missing values   Calc.hold ENTER "h.x < h.y"        UNEVALUATED_MISSING (called in B only
                                                       with h == null)
-  unmatched ENTER  Calc.boom ENTER "a < b"            FALSIFIED, falsified_by=unmatched_entry
-                                                      (the violating call throws; the stock
-                                                      checker never sees it)
+  unmatched ENTER  Calc.boom ENTER "a < b"            HELD on the 40 calls that returned; the
+                                                      one violating call throws, so its ENTER
+                                                      sample is diagnostic only
+                                                      (diag_violations_unmatched_entry=1)
   equality alias   Calc.alias ENTER "a == b"          FALSIFIED (b is an alias of leader a)
                    Calc.alias ENTER "a < c"           HELD (printed over the leader only;
                                                       "b < c" is not a candidate)
@@ -244,15 +245,16 @@ def run(work: Path, jar: str):
 
     boom_ppt = CALC_PPT.format("boom(int, int)")
     v, o = verdict(boom_ppt, "a < b")
-    samples = o.get("violating_samples", [])
-    expect(v == "FALSIFIED" and o.get("falsified_by") == "unmatched_entry" and o.get("violations_direct") == 0
-           and o.get("violations_unmatched_entry") == 1,
-           f"unmatched ENTER: 'a < b' FALSIFIED, falsified_by=unmatched_entry "
-           f"(got {v}, {o.get('falsified_by')}, direct={o.get('violations_direct')}, "
-           f"unmatched={o.get('violations_unmatched_entry')})")
+    samples = o.get("diag_violating_samples", [])
+    expect(v == "HELD" and o.get("evaluations") == 40 and o.get("violations") == 0,
+           f"unmatched ENTER: 'a < b' HELD on the 40 returned calls, not FALSIFIED "
+           f"(got {v}, evaluations={o.get('evaluations')}, violations={o.get('violations')})")
+    expect(o.get("diag_violations_unmatched_entry") == 1 and o.get("diag_evaluations_unmatched_entry") == 1,
+           f"unmatched ENTER: kept as a diagnostic (diag evaluations={o.get('diag_evaluations_unmatched_entry')}, "
+           f"diag violations={o.get('diag_violations_unmatched_entry')})")
     expect(bool(samples) and samples[0].get("origin") == "unmatched_entry"
            and samples[0]["values"] == {"a": "9", "b": "3"},
-           f"unmatched ENTER: violating sample a=9, b=3 tagged unmatched_entry (got {samples[:1]})")
+           f"unmatched ENTER: diagnostic sample a=9, b=3 tagged unmatched_entry (got {samples[:1]})")
     expect((boom_ppt, "a < b") not in stock_failed,
            "unmatched ENTER: the stock InvariantChecker does not report it")
 

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-"""Per-bug summary of run_daikon_checker_bug.py results next to the old
-text-diff results (daikon_diff_invariants.py).
+"""Per-bug summary of run_daikon_checker_bug.py / recheck_daikon_checker.py
+results next to the old text-diff results (daikon_diff_invariants.py).
 
 For each bug:
   old    FALSIFIED count from outputs_usefulness/<P>_<B>/daikon_outcomes.jsonl,
@@ -8,15 +8,20 @@ For each bug:
          invariantsFull.txt) and "ppt present" (the ppt is printed, the
          invariant text is not)
   new    FALSIFIED / HELD / UNEXERCISED / UNEVALUATED_MISSING / UNCHECKABLE
-         from <out-root>/normal/<P>_<B>/daikon_checker_outcomes.jsonl, with
-         FALSIFIED split by where the violations came from (falsified_by):
-         direct / unmatched ENTER / OBJECT-CLASS propagated / propagated
-         from an unmatched ENTER
+         from <out-root>/normal/<P>_<B>/daikon_checker_outcomes.jsonl
+         (eligible samples only), FALSIFIED split by origin: direct (the
+         stock checker's path) / propagated (OBJECT/CLASS)
+  diag   candidates an unmatched-ENTER sample (a call that never returned)
+         would violate -- diagnostic only, never part of a verdict
+  base   FALSIFIED when invA is checked against traceA itself (expected 0)
   null   FALSIFIED from <out-root>/null/<P>_<B>/, split the same way
-  a few FALSIFIED invariants with their violating samples
+  a few FALSIFIED invariants with their violating samples, and every
+  baseline violation
 
 Completed runs (CHECKER_COMPLETE present, including runs with zero results)
-are listed apart from incomplete / not-run ones.
+are listed apart from incomplete / failed / not-run ones. Runs written by an
+earlier version of the checker (no baseline_A in run_info.json) count as
+incomplete: rerun recheck_daikon_checker.py on them.
 
 Usage:
     python3 summarize_daikon_checker.py [--bugs Cli_31,Cli_34,Cli_39] [--out-root outputs_daikon_checker]
@@ -30,10 +35,9 @@ import json
 from pathlib import Path
 
 from daikon_diff_invariants import parse_daikon_invariants
-from run_daikon_checker_bug import ORIGINS, VERDICTS
+from run_daikon_checker_bug import DIAG_ORIGINS, ORIGINS, VERDICTS
 
-ORIGIN_SHORT = {"direct": "dir", "unmatched_entry": "unm", "propagated": "prop",
-                "propagated_unmatched_entry": "p-unm"}
+SHORT = {"direct": "dir", "propagated": "prop"}
 
 
 def read_jsonl(path: Path) -> list[dict]:
@@ -54,35 +58,39 @@ def old_result(old_dir: Path):
     return len(fals), missing, len(fals) - missing, {(r["ppt"], r["invariant"]) for r in fals}
 
 
-def run_state(d: Path) -> tuple[str, list[dict] | None]:
-    """('complete', outcomes) or (<why incomplete>, None)."""
+def run_state(d: Path):
+    """('complete', outcomes, run_info) or (<why not>, None, None)."""
     if not d.is_dir():
-        return "not run", None
+        return "not run", None, None
+    info = json.loads((d / "run_info.json").read_text()) if (d / "run_info.json").is_file() else {}
     if (d / "CHECKER_COMPLETE").is_file() and (d / "daikon_checker_outcomes.jsonl").is_file():
-        return "complete", read_jsonl(d / "daikon_checker_outcomes.jsonl")
-    info = d / "run_info.json"
-    if info.is_file():
-        err = json.loads(info.read_text()).get("error")
-        if err:
-            return f"failed: {err[:160]}", None
+        if "baseline_A" not in info:
+            return "old checker format (unmatched ENTERs in verdicts) -- run recheck", None, None
+        return "complete", read_jsonl(d / "daikon_checker_outcomes.jsonl"), info
+    if info.get("error"):
+        return f"failed: {info['error'][:160]}", None, None
     logs = sorted((d / "logs").glob("*.log"), key=lambda p: p.stat().st_mtime) if (d / "logs").is_dir() else []
     if logs:
         age = datetime.datetime.now().timestamp() - logs[-1].stat().st_mtime
-        return f"incomplete (running or killed; last log {logs[-1].name}, {age / 60:.0f} min ago)", None
-    return "incomplete (no logs yet)", None
+        return f"incomplete (running or killed; last log {logs[-1].name}, {age / 60:.0f} min ago)", None, None
+    return "incomplete (no logs yet)", None, None
 
 
 def counts(outcomes: list[dict]) -> dict[str, int]:
     return {v: sum(1 for o in outcomes if o["verdict"] == v) for v in VERDICTS}
 
 
-def by_origin(outcomes: list[dict]) -> dict[str, int]:
-    return {o: sum(1 for x in outcomes if x.get("falsified_by") == o) for o in ORIGINS}
-
-
 def origin_str(outcomes: list[dict]) -> str:
-    b = by_origin(outcomes)
-    return "/".join(str(b[o]) for o in ORIGINS)
+    return "/".join(str(sum(1 for o in outcomes if o.get("falsified_by") == g)) for g in ORIGINS)
+
+
+def n_diag(outcomes: list[dict]) -> int:
+    return sum(1 for o in outcomes if any(o.get(f"diag_violations_{g}", 0) for g in DIAG_ORIGINS))
+
+
+def short_state(state: str) -> str:
+    return ("not run" if state == "not run" else "failed" if state.startswith("failed")
+            else "old fmt" if state.startswith("old") else "incompl.")
 
 
 def main():
@@ -101,52 +109,56 @@ def main():
 
     complete, incomplete = [], []
     for bug in bugs:
-        state, outcomes = run_state(out_root / "normal" / bug)
-        nstate, noutcomes = run_state(out_root / "null" / bug)
-        row = (bug, state, outcomes, nstate, noutcomes, old_result(old_root / bug))
-        (complete if outcomes is not None else incomplete).append(row)
+        normal = run_state(out_root / "normal" / bug)
+        null = run_state(out_root / "null" / bug)
+        row = (bug, normal, null, old_result(old_root / bug))
+        (complete if normal[1] is not None else incomplete).append(row)
 
     def old_cols(old):
         if old is None:
-            return f'{"n/a":>6}{"":>9}{"":>9}'
+            return f'{"n/a":>5}{"":>9}{"":>9}'
         n, miss, pres = old[:3]
-        return f"{n:>6}{'?' if miss is None else miss:>9}{'?' if pres is None else pres:>9}"
+        return f"{n:>5}{'?' if miss is None else miss:>9}{'?' if pres is None else pres:>9}"
 
-    orig_hdr = "/".join(ORIGIN_SHORT[o] for o in ORIGINS)
+    oh = "/".join(SHORT[g] for g in ORIGINS)
     print("######## COMPLETED (normal run finished; zero counts are real zeros) ########")
-    print(f'{"bug":<16}{"old":>6}{"ppt-miss":>9}{"ppt-pres":>9} |{"FALS":>6} {orig_hdr:>16}{"HELD":>7}{"UNEX":>6}'
-          f'{"MISS":>6}{"UNCHK":>6} |{"null FALS":>10} {orig_hdr:>16}')
-    for bug, _, outcomes, nstate, noutcomes, old in complete:
+    print(f'{"bug":<12}{"old":>5}{"ppt-miss":>9}{"ppt-pres":>9} |{"FALS":>5} {oh:>8}{"HELD":>6}{"UNEX":>5}{"MISS":>5}'
+          f'{"UNCHK":>6}{"diag":>5}{"base":>5} |{"null":>8} {oh:>8}{"diag":>5}{"base":>5}')
+    for bug, (_, outcomes, info), (nstate, noutcomes, ninfo), old in complete:
         c = counts(outcomes)
+        base = info["baseline_A"]["counts"]["FALSIFIED"]
         if noutcomes is not None:
-            null, null_orig = str(counts(noutcomes)["FALSIFIED"]), origin_str(noutcomes)
+            nc = f"{counts(noutcomes)['FALSIFIED']:>8} {origin_str(noutcomes):>8}{n_diag(noutcomes):>5}" \
+                 f"{ninfo['baseline_A']['counts']['FALSIFIED']:>5}"
         else:
-            null = "not run" if nstate == "not run" else "failed" if nstate.startswith("failed") else "incompl."
-            null_orig = ""
-        print(f"{bug:<16}{old_cols(old)} |{c['FALSIFIED']:>6} {origin_str(outcomes):>16}{c['HELD']:>7}"
-              f"{c['UNEXERCISED']:>6}{c['UNEVALUATED_MISSING']:>6}{c['UNCHECKABLE']:>6} |{null:>10} {null_orig:>16}")
+            nc = f"{short_state(nstate):>8}"
+        print(f"{bug:<12}{old_cols(old)} |{c['FALSIFIED']:>5} {origin_str(outcomes):>8}{c['HELD']:>6}"
+              f"{c['UNEXERCISED']:>5}{c['UNEVALUATED_MISSING']:>5}{c['UNCHECKABLE']:>6}{n_diag(outcomes):>5}{base:>5} |{nc}")
     if not complete:
         print("  (none)")
-    print("  old = daikon_outcomes.jsonl FALSIFIED (text diff); ppt-miss / ppt-pres = its ppt is absent from /")
-    print("  present in invariantsFull.txt. FALS/HELD/UNEX/MISS/UNCHK = checker verdicts (MISS = UNEVALUATED_MISSING:")
-    print("  ppt reached, but every sample had a missing/out-of-bounds variable; UNEX = ppt never reached).")
-    print(f"  {orig_hdr} = FALSIFIED by origin: direct (the stock checker's path) / unmatched ENTER (call never")
-    print("  returned) / propagated to OBJECT-CLASS / propagated from an unmatched ENTER.")
+    print("  old = daikon_outcomes.jsonl FALSIFIED (text diff); ppt-miss / ppt-pres = its ppt absent from / present in")
+    print("  invariantsFull.txt. Verdicts use eligible samples only (Daikon's inference samples):")
+    print(f"  FALS ({oh} = direct, the stock checker's path / propagated to OBJECT-CLASS), HELD, UNEX (ppt never")
+    print("  reached), MISS (UNEVALUATED_MISSING: reached, but every sample had a missing/out-of-bounds variable),")
+    print("  UNCHK. diag = candidates an unmatched ENTER (call never returned) would violate: NOT in any verdict.")
+    print("  base = FALSIFIED when invA is checked against traceA itself (expected 0).")
     print()
 
-    print("######## INCOMPLETE / NOT RUN ########")
-    for bug, state, _, nstate, noutcomes, old in incomplete:
-        null = f"null: {'complete, FALSIFIED=' + str(counts(noutcomes)['FALSIFIED']) if noutcomes is not None else nstate}"
-        print(f"{bug:<16} normal: {state} | {null}")
-    for bug, _, _, nstate, noutcomes, _ in complete:
+    print("######## INCOMPLETE / FAILED / NOT RUN ########")
+    shown = False
+    for bug, (state, _, _), (nstate, noutcomes, _), _ in incomplete:
+        print(f"{bug:<12} normal: {state} | null: {'complete' if noutcomes is not None else nstate}")
+        shown = True
+    for bug, _, (nstate, noutcomes, _), _ in complete:
         if noutcomes is None:
-            print(f"{bug:<16} normal: complete | null: {nstate}")
-    if not incomplete and all(r[4] is not None for r in complete):
+            print(f"{bug:<12} normal: complete | null: {nstate}")
+            shown = True
+    if not shown:
         print("  (none)")
     print()
 
     print("######## DETAILS ########")
-    for bug, _, outcomes, _, noutcomes, old in complete:
+    for bug, (_, outcomes, info), (_, noutcomes, ninfo), old in complete:
         fals = [o for o in outcomes if o["verdict"] == "FALSIFIED"]
         print(f"=== {bug}: {len(outcomes)} candidates, {len(fals)} FALSIFIED")
         if old is not None:
@@ -162,8 +174,10 @@ def main():
                 reasons[o.get("reason", "?")] = reasons.get(o.get("reason", "?"), 0) + 1
         if reasons:
             print(f"    UNCHECKABLE reasons: {reasons}")
+        print(f"    diagnostic unmatched-ENTER candidates by (eligible) verdict: "
+              f"{info.get('diag_unmatched_entry_candidates')}")
         for o in fals[: args.examples]:
-            split = ", ".join(f"{ORIGIN_SHORT[g]}={o[f'violations_{g}']}" for g in ORIGINS if o[f"violations_{g}"])
+            split = ", ".join(f"{SHORT[g]}={o[f'violations_{g}']}" for g in ORIGINS if o[f"violations_{g}"])
             print(f"    {o['ppt']}")
             print(f"        {o['invariant']}   (falsified_by={o['falsified_by']}; violations={o['violations']} "
                   f"[{split}] of {o['evaluations']} evaluations)")
@@ -171,9 +185,18 @@ def main():
                 vals = ", ".join(f"{k}={v}" for k, v in s["values"].items())
                 print(f"        sample: {vals}   [{s['status']}, {s.get('origin')}, "
                       f"{Path(s['file'] or '').name}:{s['line']}]")
+        for label, inf in (("normal", info), ("null", ninfo)):
+            if inf is None:
+                continue
+            bf = inf["baseline_A"]["falsified"]
+            print(f"    baseline ({label}, invA vs traceA): {len(bf)} FALSIFIED")
+            for o in bf:
+                vals = "; ".join(", ".join(f"{k}={v}" for k, v in s["values"].items()) for s in o["violating_samples"])
+                print(f"        {o['ppt']} :: {o['invariant']}   ({o['falsified_by']}, {o['violations']} of "
+                      f"{o['evaluations']})  {vals}")
         if noutcomes is not None:
             nf = [o for o in noutcomes if o["verdict"] == "FALSIFIED"]
-            print(f"    null run: {len(nf)} FALSIFIED of {len(noutcomes)} candidates, by origin {by_origin(noutcomes)}")
+            print(f"    null run: {len(nf)} FALSIFIED of {len(noutcomes)} candidates ({oh} {origin_str(noutcomes)})")
             for o in nf[: args.examples]:
                 print(f"        {o['ppt']} :: {o['invariant']}   (falsified_by={o['falsified_by']})")
         print()

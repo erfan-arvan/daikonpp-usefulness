@@ -17,35 +17,44 @@ Phase-B sample is checked against them:
     noise, not the bug).
   Check: DaikonCandidateChecker (a minimal wrapper around Daikon's
     InvariantChecker classes; see that file for why the stock tool alone
-    can't give evaluation counts) evaluates every invariant of invA on every
-    Phase-B sample, without a second inference. The stock
+    can't give evaluation counts) evaluates every invariant of invA on the
+    Phase-B samples, without a second inference. The stock
     daikon.tools.InvariantChecker --verbose also runs on the same inputs,
     and its raw output is kept and cross-checked.
+  Baseline: the same check of invA against traceA itself (the samples it
+    was inferred from), in baseline_A/. Expected: no FALSIFIED; any are
+    reported, not hidden.
+
+Eligible samples are the ones Daikon's inference uses: numbered-EXIT
+samples (also applied to the combined EXIT), the ENTER sample of every call
+that returned, and those propagated through the ppt hierarchy to OBJECT /
+CLASS. ENTER samples of calls that never returned (threw, or the trace
+ended) are not used by Daikon's inference; they are checked as diagnostics
+only (diag_* fields) and never affect a verdict.
 
 Candidates: the invariants printed in invariantsA.txt for which
 daikon_diff_invariants.is_overfit_prone_invariant() is False. Each is mapped
 to the invariant object that PrintInvariants printed it from (same printed
 text at the same ppt). Verdicts:
 
-  FALSIFIED            >= 1 Phase-B sample violated it (counted once per
-                       invariant); "falsified_by" says where the violations
-                       came from (see below)
-  HELD                 evaluated on >= 1 sample, never violated
-  UNEXERCISED          no applicable sample at all: its ppt was never reached
-  UNEVALUATED_MISSING  its ppt was reached, but on every such sample one of
-                       its variables was missing (nonsensical/flow) or out of
+  FALSIFIED            >= 1 eligible sample violated it (counted once per
+                       invariant); "falsified_by" says where (see below)
+  HELD                 >= 1 eligible evaluation and no eligible violation
+  UNEXERCISED          no eligible sample reached its ppt
+  UNEVALUATED_MISSING  eligible samples reached its ppt, but on every one a
+                       variable was missing (nonsensical/flow) or out of
                        bounds, so it was never evaluated
   UNCHECKABLE          could not be mapped to exactly one active invariant of
                        invA (e.g. implications, ambiguous text), or the stock
                        checker and the wrapper disagree on its own path
 
-Violation origins (counts per candidate; falsified_by is the first that is
-nonzero, in this order):
-  direct                      a sample of this ppt (or EXITnn -> EXIT) from a
-                              call that returned -- what the stock checker sees
-  unmatched_entry             an ENTER sample of a call that never returned
-  propagated                  reached an OBJECT/CLASS ppt through the hierarchy
-  propagated_unmatched_entry  the same, rooted at an unmatched ENTER sample
+Eligible violation origins (falsified_by is the first nonzero):
+  direct       a sample of this ppt (or EXITnn -> EXIT) -- what the stock
+               checker sees
+  propagated   reached an OBJECT/CLASS ppt through the hierarchy
+Diagnostic only (diag_violations_*): unmatched_entry (an ENTER sample of a
+call that never returned) and propagated_unmatched_entry (the same, reaching
+OBJECT/CLASS).
 
 In --null mode, phase B must run exactly the tests phase A ran, with the
 same multiplicities; otherwise the run fails without a completion marker.
@@ -53,12 +62,14 @@ same multiplicities; otherwise the run fails without a completion marker.
 Outputs, in <out-root>/<normal|null>/<PROJECT>_<BUG>/ (nothing under
 outputs_usefulness/ is touched): the traces, invA.inv.gz, invariantsA.txt,
 checker_records.jsonl (every invariant of invA with counts),
-checker_summary.json, stock_checker_verbose.txt, stock_checker.log,
-daikon_checker_outcomes.jsonl, run_info.json, logs/, and CHECKER_COMPLETE,
-written last and only after every step succeeded.
+checker_summary.json, stock_checker_verbose.txt,
+daikon_checker_outcomes.jsonl, baseline_A/ (the same files for invA vs.
+traceA), run_info.json, logs/, and CHECKER_COMPLETE, written last and only
+after every step succeeded.
 
 Usage:
     DAIKON_JAR=/path/to/daikon.jar python3 run_daikon_checker_bug.py <PROJECT> <BUG_ID> [--null]
+To redo only the check on saved traces/invA, see recheck_daikon_checker.py.
 """
 from __future__ import annotations
 
@@ -106,7 +117,8 @@ DAIKON_CONFIG = ["daikon.split.PptSplitter.disable_splitting=true", *DAIKON_EXTR
 
 COMPLETE = "CHECKER_COMPLETE"
 VERDICTS = ("FALSIFIED", "HELD", "UNEXERCISED", "UNEVALUATED_MISSING", "UNCHECKABLE")
-ORIGINS = ("direct", "unmatched_entry", "propagated", "propagated_unmatched_entry")
+ORIGINS = ("direct", "propagated")  # eligible: decide verdicts
+DIAG_ORIGINS = ("unmatched_entry", "propagated_unmatched_entry")  # diagnostic only
 
 
 class InfraError(RuntimeError):
@@ -344,8 +356,8 @@ def classify(invariants_a_text: str, records: list[dict], stock_failed: set | No
             by_format.setdefault((r["ppt"], r["format"]), []).append(r)
 
     # Stock-checker cross-check, both ways, on the stock checker's own path:
-    # violations_direct excludes unmatched-ENTER and propagated samples,
-    # which the stock checker never checks.
+    # violations_direct excludes propagated samples and (diagnostic)
+    # unmatched-ENTER samples, which the stock checker never checks.
     disagree: set[tuple[str, str]] = set()
     stock_only: set[tuple[str, str]] = set()
     wrapper_only: set[tuple[str, str]] = set()
@@ -385,6 +397,10 @@ def classify(invariants_a_text: str, records: list[dict], stock_failed: set | No
                 "skipped_missing": r["skipped_missing"],
                 "skipped_out_of_bounds": r["skipped_out_of_bounds"],
                 "violating_samples": r["first_violations"],
+                # diagnostics: never used for the verdict
+                "diag_evaluations_unmatched_entry": r["diag_evaluations_unmatched_entry"],
+                **{f"diag_violations_{o}": r[f"diag_violations_{o}"] for o in DIAG_ORIGINS},
+                "diag_violating_samples": r["first_diag_violations"],
             }
             if not r["active"]:
                 outcomes.append({**row, "verdict": "UNCHECKABLE", "reason": "invariant is not active", **info})
@@ -414,6 +430,68 @@ def classify(invariants_a_text: str, records: list[dict], stock_failed: set | No
 
 def write_outcomes(path: Path, outcomes: list[dict]):
     write_atomic(path, "".join(json.dumps(o) + "\n" for o in outcomes))
+
+
+def tally(outcomes: list[dict]) -> dict:
+    diag = [o for o in outcomes if any(o.get(f"diag_violations_{g}", 0) for g in DIAG_ORIGINS)]
+    return {
+        "candidates": len(outcomes),
+        "counts": {v: sum(1 for o in outcomes if o["verdict"] == v) for v in VERDICTS},
+        "falsified_by": {g: sum(1 for o in outcomes if o.get("falsified_by") == g) for g in ORIGINS},
+        # candidates an unmatched ENTER sample would have violated, by their (eligible) verdict
+        "diag_unmatched_entry_candidates": {v: sum(1 for o in diag if o["verdict"] == v) for v in VERDICTS},
+    }
+
+
+def check_one(daikon_jar, checker_classes: Path, inv: Path, invariants_a_text: str, trace: Path,
+              dest: Path, logs: Path, tag: str, max_violations: int) -> dict:
+    """invA against one trace: wrapper + stock checker + classification, all
+    outputs in `dest`. Returns tally + cross-check + checker summary."""
+    dest.mkdir(parents=True, exist_ok=True)
+    records_path, summary_path = run_wrapper(daikon_jar, checker_classes, inv, trace, dest,
+                                             logs / f"checker_wrapper{tag}.log", max_violations)
+    stock_failed, unparsed = parse_stock(
+        run_stock_checker(daikon_jar, inv, trace, dest, logs / f"stock_checker{tag}.log"))
+    outcomes, cross = classify(invariants_a_text, load_records(records_path), stock_failed)
+    cross["stock_unparsed_lines"] = unparsed
+    write_outcomes(dest / "daikon_checker_outcomes.jsonl", outcomes)
+    return {**tally(outcomes), "cross_check": cross,
+            "checker_summary": json.loads(summary_path.read_text()), "_outcomes": outcomes}
+
+
+def run_checks(daikon_jar, out_dir: Path, inv_a: Path, invariants_a: Path, trace_a: Path, trace_b: Path,
+               logs: Path, info: dict, max_violations: int):
+    """Checks invA against trace B (-> out_dir) and against traceA itself
+    (baseline -> out_dir/baseline_A), updates `info`, then writes
+    run_info.json and, last, the completion marker."""
+    checker_classes = compile_checker(daikon_jar, out_dir / "checker-classes", logs / "javac_checker.log")
+    text = invariants_a.read_text(errors="replace")
+    res = check_one(daikon_jar, checker_classes, inv_a, text, trace_b, out_dir, logs, "", max_violations)
+    base = check_one(daikon_jar, checker_classes, inv_a, text, trace_a, out_dir / "baseline_A", logs, "_baseline_A",
+                     max_violations)
+    base_fals = [{"ppt": o["ppt"], "invariant": o["invariant"], "falsified_by": o["falsified_by"],
+                  "violations": o["violations"], "evaluations": o["evaluations"],
+                  "violating_samples": o["violating_samples"][:2]}
+                 for o in base.pop("_outcomes") if o["verdict"] == "FALSIFIED"]
+    res.pop("_outcomes")
+    info.update(res)
+    info["baseline_A"] = {**base, "falsified": base_fals}
+    write_atomic(out_dir / "run_info.json", json.dumps(info, indent=1))
+    write_atomic(out_dir / COMPLETE, json.dumps({"finished": datetime.datetime.now().isoformat(),
+                                                 **res["counts"]}) + "\n")
+    print("=" * 60)
+    print(f">>> DONE {info['project']}-{info['bug_id']} [{info['mode']}]: candidates={res['candidates']} {res['counts']}")
+    print(f"    FALSIFIED by origin: {res['falsified_by']}")
+    print(f"    diagnostic (unmatched ENTER, not in verdicts): candidates it would violate, by verdict: "
+          f"{res['diag_unmatched_entry_candidates']}")
+    print(f"    baseline invA vs traceA: {base['counts']['FALSIFIED']} FALSIFIED of {base['candidates']} candidates")
+    for o in base_fals[:10]:
+        print(f"      BASELINE VIOLATION {o['ppt']} :: {o['invariant']} ({o['falsified_by']}, {o['violations']})")
+    for label, r in (("check", res), ("baseline", base)):
+        n = len(r["cross_check"]["stock_only_disagreements"]) + len(r["cross_check"]["wrapper_only_disagreements"])
+        if n:
+            print(f"[WARN] {label}: {n} stock-checker disagreement(s), marked UNCHECKABLE (see run_info.json)")
+    print("=" * 60)
 
 
 def main():
@@ -537,31 +615,8 @@ def main():
         if mode == "null":
             verify_same_inventory(ran_a, ran_b, info["verify_b"].setdefault("null_inventory", {}))
 
-        # ---- Check invA (frozen) against trace B
-        checker_classes = compile_checker(daikon_jar, out_dir / "checker-classes", logs / "javac_checker.log")
-        records_path, summary_path = run_wrapper(daikon_jar, checker_classes, inv_a, trace_b, out_dir,
-                                                 logs / "checker_wrapper.log", args.max_violations)
-        stock_verbose = run_stock_checker(daikon_jar, inv_a, trace_b, out_dir, logs / "stock_checker.log")
-        stock_failed, unparsed = parse_stock(stock_verbose)
-
-        records = load_records(records_path)
-        outcomes, cross = classify(invariants_a.read_text(errors="replace"), records, stock_failed)
-        cross["stock_unparsed_lines"] = unparsed
-        write_outcomes(out_dir / "daikon_checker_outcomes.jsonl", outcomes)
-
-        counts = {v: sum(1 for o in outcomes if o["verdict"] == v) for v in VERDICTS}
-        falsified_by = {o: sum(1 for x in outcomes if x.get("falsified_by") == o) for o in ORIGINS}
-        info.update({"counts": counts, "falsified_by": falsified_by, "candidates": len(outcomes), "cross_check": cross,
-                     "checker_summary": json.loads(summary_path.read_text())})
-        write_atomic(out_dir / "run_info.json", json.dumps(info, indent=1))
-        write_atomic(marker, json.dumps({"finished": datetime.datetime.now().isoformat(), **counts}) + "\n")
-        print("=" * 60)
-        print(f">>> DONE {args.project}-{args.bug_id} [{mode}]: candidates={len(outcomes)} {counts}")
-        print(f"    FALSIFIED by origin: {falsified_by}")
-        n_dis = len(cross["stock_only_disagreements"]) + len(cross["wrapper_only_disagreements"])
-        if n_dis:
-            print(f"[WARN] {n_dis} stock-checker disagreement(s), marked UNCHECKABLE (see run_info.json)")
-        print("=" * 60)
+        # ---- Check invA (frozen) against trace B, and against traceA (baseline)
+        run_checks(daikon_jar, out_dir, inv_a, invariants_a, trace_a, trace_b, logs, info, args.max_violations)
     except Exception as e:
         info["error"] = f"{type(e).__name__}: {e}"
         write_atomic(out_dir / "run_info.json", json.dumps(info, indent=1))

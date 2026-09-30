@@ -26,7 +26,6 @@ import java.io.Writer;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.HashMap;
 import java.util.HashSet;
 import java.util.IdentityHashMap;
 import java.util.LinkedHashMap;
@@ -44,18 +43,24 @@ import java.util.Set;
  * keeps the sets testedInvariants/failedInvariants (package-private, no per-invariant counts). It
  * cannot say how many samples an invariant was evaluated on, so HELD vs. UNEXERCISED can't be told
  * apart from its output. This class is a minimal wrapper that follows InvariantCheckProcessor's
- * sample handling (orig/derived variables, numbered EXITnn samples also applied to the combined
- * EXIT with get_missingOutOfBounds, slices skipped when a variable is missing or out of bounds,
- * inactive invariants skipped) but uses the non-mutating {@code check} methods, so the invariants
- * stay exactly as inferred and every violation is counted. Differences from the stock checker, by
- * design:
+ * sample handling but uses the non-mutating {@code check} methods, so the invariants stay exactly
+ * as inferred and every violation is counted.
+ *
+ * <p>Samples are the ones Daikon's own inference uses (FileIO.process_sample with the dataflow
+ * hierarchy adds only leaf samples -- numbered EXITs -- and builds ENTER, combined EXIT, OBJECT and
+ * CLASS invariants from them through the hierarchy):
  *
  * <ul>
- *   <li>ENTER samples are checked when read (as Daikon's own inference uses them), not deferred to
- *       the matching EXIT; the stock checker never checks the ENTER sample of a call that throws.
- *   <li>Samples are also propagated along PARENT/USER relations of the ppt hierarchy (method ENTER
- *       / combined EXIT to OBJECT, OBJECT to CLASS), which is how Daikon's OBJECT/CLASS invariants
- *       are justified. The stock checker never evaluates OBJECT/CLASS invariants.
+ *   <li>An ENTER sample is checked only when its call returns (its EXIT is read), as the stock
+ *       checker does. ENTER samples of calls that never return (threw, or the trace ended) are
+ *       never part of Daikon's inference; they are checked at the end as DIAGNOSTICS only, counted
+ *       separately and never mixed into the eligible counts.
+ *   <li>A numbered EXITnn sample is also checked at the combined EXIT (with get_missingOutOfBounds,
+ *       as the stock checker does).
+ *   <li>The ENTER sample of a returned call and the combined EXIT sample are propagated along the
+ *       PARENT/USER relations of the hierarchy (method to OBJECT, OBJECT to CLASS), which is how
+ *       Daikon's OBJECT/CLASS invariants get their data. The stock checker never evaluates
+ *       OBJECT/CLASS invariants.
  * </ul>
  *
  * <p>For mapping to PrintInvariants output, each invariant is also printed exactly as
@@ -69,48 +74,35 @@ import java.util.Set;
 public class DaikonCandidateChecker {
 
   /**
-   * Violations are split by where the violating sample came from:
-   *
-   * <ul>
-   *   <li>direct: a sample of this ppt (or EXITnn applied to the combined EXIT) -- the stock
-   *       checker's path -- except
-   *   <li>unmatched_entry: an ENTER sample of a call whose EXIT never appears in the trace (it
-   *       threw, or the trace ended); the stock checker never checks these
-   *   <li>propagated: reached this OBJECT/CLASS ppt via a PARENT/USER relation, and
-   *   <li>propagated_unmatched_entry: the same, rooted at an unmatched ENTER sample.
-   * </ul>
-   *
-   * Whether an ENTER is unmatched is only known at the end of the trace, so ENTER-rooted
-   * violations are kept pending per nonce until their EXIT is seen.
+   * Per-invariant counts. Eligible (Daikon's inference samples): direct = a sample of this ppt (or
+   * EXITnn applied to the combined EXIT), the stock checker's path; propagated = reached this
+   * OBJECT/CLASS ppt through the hierarchy. Diagnostic only: samples rooted at an ENTER whose call
+   * never returned, directly (unmatched_entry) or propagated (propagated_unmatched_entry).
    */
   static final class Stats {
     long evaluations = 0;
-    long violationsNonPropagated = 0; // direct + unmatched_entry
-    long violationsPropagatedAll = 0; // propagated + propagated_unmatched_entry
-    long unmatchedEntry = 0;
-    long propagatedUnmatchedEntry = 0;
-    long skippedMissing = 0; // slice skipped: a variable's value is missing (nonsensical/flow)
-    long skippedOutOfBounds = 0; // slice skipped: a derived variable is marked out of bounds
-    List<Violation> firstViolations = new ArrayList<>();
+    long violationsDirect = 0;
+    long violationsPropagated = 0;
+    long skippedMissing = 0; // eligible sample skipped: a variable's value is missing
+    long skippedOutOfBounds = 0; // eligible sample skipped: a derived variable is out of bounds
+    List<String> firstViolations = new ArrayList<>();
+    long diagEvaluations = 0;
+    long diagViolationsUnmatchedEntry = 0;
+    long diagViolationsPropagatedUnmatchedEntry = 0;
+    List<String> firstDiagViolations = new ArrayList<>();
   }
 
-  static final class Violation {
-    final String json; // without the "origin" field
-    final Integer rootEnterNonce; // non-null if the root sample was an ENTER
-    final boolean propagated;
+  static final class EnterCall {
+    final PptTopLevel ppt;
+    final ValueTuple vt;
+    final int linenum;
+    final String file;
 
-    Violation(String json, Integer rootEnterNonce, boolean propagated) {
-      this.json = json;
-      this.rootEnterNonce = rootEnterNonce;
-      this.propagated = propagated;
-    }
-
-    String origin() {
-      boolean unmatched = rootEnterNonce != null && openCalls.contains(rootEnterNonce);
-      if (propagated) {
-        return unmatched ? "propagated_unmatched_entry" : "propagated";
-      }
-      return unmatched ? "unmatched_entry" : "direct";
+    EnterCall(PptTopLevel ppt, ValueTuple vt, int linenum, String file) {
+      this.ppt = ppt;
+      this.vt = vt;
+      this.linenum = linenum;
+      this.file = file;
     }
   }
 
@@ -121,9 +113,13 @@ public class DaikonCandidateChecker {
   static long exitWithoutEnter = 0;
   static long propagatedSamples = 0;
   static long unmappedParentVars = 0;
-  static final Set<Integer> openCalls = new HashSet<>();
-  /** ENTER nonce -> (stats, propagated?) of each violation rooted at that ENTER sample. */
-  static final Map<Integer, List<Object[]>> pendingByNonce = new HashMap<>();
+  /** ENTER samples waiting for their EXIT, by nonce (InvariantCheckProcessor's call_map). */
+  static final Map<Integer, EnterCall> openCalls = new LinkedHashMap<>();
+
+  /** Where the sample being checked was read from (an ENTER is checked later than it is read). */
+  static int curLine = 0;
+
+  static String curFile = null;
 
   public static void main(String[] args) throws Exception {
     String invFile = null;
@@ -212,22 +208,13 @@ public class DaikonCandidateChecker {
 
     FileIO.read_data_trace_files(dtraces, ppts, new Processor(), false);
 
-    // ENTER samples still open at the end belong to calls that never returned.
-    long unmatchedEntryViolations = 0;
-    for (Integer nonce : openCalls) {
-      List<Object[]> pending = pendingByNonce.get(nonce);
-      if (pending == null) {
-        continue;
-      }
-      for (Object[] p : pending) {
-        Stats s = (Stats) p[0];
-        if ((Boolean) p[1]) {
-          s.propagatedUnmatchedEntry++;
-        } else {
-          s.unmatchedEntry++;
-        }
-        unmatchedEntryViolations++;
-      }
+    // Diagnostics: ENTER samples of calls that never returned. Not used by Daikon's inference,
+    // so they never count toward the eligible evaluations/violations.
+    long unmatchedEnters = openCalls.size();
+    for (EnterCall ec : openCalls.values()) {
+      curLine = ec.linenum;
+      curFile = ec.file;
+      add(ec.ppt, ec.vt, ppts, new HashSet<>(), false, true);
     }
 
     File out = new File(outFile);
@@ -262,32 +249,21 @@ public class DaikonCandidateChecker {
             }
             sb.append("],");
             sb.append("\"active\":").append(inv.isActive()).append(',');
-            sb.append("\"evaluations\":").append(s.evaluations).append(',');
-            sb.append("\"violations\":")
-                .append(s.violationsNonPropagated + s.violationsPropagatedAll)
-                .append(',');
-            sb.append("\"violations_direct\":")
-                .append(s.violationsNonPropagated - s.unmatchedEntry)
-                .append(',');
-            sb.append("\"violations_unmatched_entry\":").append(s.unmatchedEntry).append(',');
-            sb.append("\"violations_propagated\":")
-                .append(s.violationsPropagatedAll - s.propagatedUnmatchedEntry)
-                .append(',');
-            sb.append("\"violations_propagated_unmatched_entry\":")
-                .append(s.propagatedUnmatchedEntry)
-                .append(',');
-            sb.append("\"skipped_missing\":").append(s.skippedMissing).append(',');
-            sb.append("\"skipped_out_of_bounds\":").append(s.skippedOutOfBounds).append(',');
-            sb.append("\"first_violations\":[");
-            for (int i = 0; i < s.firstViolations.size(); i++) {
-              if (i > 0) {
-                sb.append(',');
-              }
-              Violation v = s.firstViolations.get(i);
-              sb.append(v.json, 0, v.json.length() - 1).append(',');
-              kv(sb, "origin", v.origin()).append('}');
-            }
-            sb.append("]}\n");
+            num(sb, "evaluations", s.evaluations);
+            num(sb, "violations", s.violationsDirect + s.violationsPropagated);
+            num(sb, "violations_direct", s.violationsDirect);
+            num(sb, "violations_propagated", s.violationsPropagated);
+            num(sb, "skipped_missing", s.skippedMissing);
+            num(sb, "skipped_out_of_bounds", s.skippedOutOfBounds);
+            list(sb, "first_violations", s.firstViolations).append(',');
+            num(sb, "diag_evaluations_unmatched_entry", s.diagEvaluations);
+            num(sb, "diag_violations_unmatched_entry", s.diagViolationsUnmatchedEntry);
+            num(
+                sb,
+                "diag_violations_propagated_unmatched_entry",
+                s.diagViolationsPropagatedUnmatchedEntry);
+            list(sb, "first_diag_violations", s.firstDiagViolations);
+            sb.append("}\n");
             w.write(sb.toString());
           }
         }
@@ -306,55 +282,61 @@ public class DaikonCandidateChecker {
           String.format(
               "{\"samples_read\":%d,\"enter_samples\":%d,\"enter_without_exit\":%d,"
                   + "\"exit_without_enter\":%d,\"propagated_samples\":%d,"
-                  + "\"unmapped_parent_var_values\":%d,\"unmatched_entry_violations\":%d,"
-                  + "\"invariants\":%d}%n",
+                  + "\"unmapped_parent_var_values\":%d,\"invariants\":%d}%n",
               samplesRead,
               enterSamples,
-              openCalls.size(),
+              unmatchedEnters,
               exitWithoutEnter,
               propagatedSamples,
               unmappedParentVars,
-              unmatchedEntryViolations,
               stats.size()));
     }
     if (!stmp.renameTo(sum)) {
       throw new RuntimeException("could not rename " + stmp + " to " + sum);
     }
     System.out.printf(
-        "DaikonCandidateChecker: %d samples, %d invariants, %d with violations%n",
+        "DaikonCandidateChecker: %d samples, %d invariants, %d with eligible violations,"
+            + " %d unmatched ENTER samples (diagnostic only)%n",
         samplesRead,
         stats.size(),
         stats.values().stream()
-            .filter(x -> x.violationsNonPropagated + x.violationsPropagatedAll > 0)
-            .count());
+            .filter(x -> x.violationsDirect + x.violationsPropagated > 0)
+            .count(),
+        unmatchedEnters);
   }
 
   static final class Processor extends FileIO.Processor {
     @Override
-    public void process_sample(
-        PptMap all_ppts, PptTopLevel ppt, ValueTuple vt, Integer nonce) {
+    public void process_sample(PptMap all_ppts, PptTopLevel ppt, ValueTuple vt, Integer nonce) {
       samplesRead++;
       // As InvariantCheckProcessor: add orig and derived variables, then intern.
       FileIO.compute_orig_variables(ppt, vt.vals, vt.mods, nonce);
       FileIO.compute_derived_variables(ppt, vt.vals, vt.mods);
       vt = new ValueTuple(vt.vals, vt.mods);
+      int line = FileIO.get_linenum();
+      String file = FileIO.data_trace_state == null ? null : FileIO.data_trace_state.filename;
 
-      Integer rootEnterNonce = null;
+      // As InvariantCheckProcessor: an ENTER sample waits for its call's EXIT.
       if (ppt.ppt_name.isEnterPoint()) {
         enterSamples++;
         if (nonce != null) {
-          openCalls.add(nonce);
-          rootEnterNonce = nonce;
+          openCalls.put(nonce, new EnterCall(ppt, vt, line, file));
         }
-      } else if (ppt.ppt_name.isExitPoint()) {
-        // As InvariantCheckProcessor: an exit whose enter was never seen is skipped.
-        if (nonce == null || !openCalls.remove(nonce)) {
-          exitWithoutEnter++;
+        return;
+      }
+      if (ppt.ppt_name.isExitPoint()) {
+        EnterCall ec = nonce == null ? null : openCalls.remove(nonce);
+        if (ec == null) {
+          exitWithoutEnter++; // as InvariantCheckProcessor: skipped
           return;
         }
-        pendingByNonce.remove(nonce); // the call returned: its ENTER violations are not unmatched
+        curLine = ec.linenum;
+        curFile = ec.file;
+        add(ec.ppt, ec.vt, all_ppts, new HashSet<>(), false, false);
       }
-      add(ppt, vt, all_ppts, new HashSet<>(), false, rootEnterNonce);
+      curLine = line;
+      curFile = file;
+      add(ppt, vt, all_ppts, new HashSet<>(), false, false);
     }
   }
 
@@ -364,7 +346,7 @@ public class DaikonCandidateChecker {
       PptMap all_ppts,
       Set<PptTopLevel> visited,
       boolean propagated,
-      Integer rootEnterNonce) {
+      boolean diagnostic) {
     if (!visited.add(ppt)) {
       return;
     }
@@ -374,7 +356,7 @@ public class DaikonCandidateChecker {
       PptTopLevel parent = all_ppts.get(ppt.ppt_name.makeExit());
       if (parent != null) {
         parent.get_missingOutOfBounds(ppt, vt);
-        add(parent, vt, all_ppts, visited, propagated, rootEnterNonce);
+        add(parent, vt, all_ppts, visited, propagated, diagnostic);
       }
     }
 
@@ -388,13 +370,15 @@ public class DaikonCandidateChecker {
           outOfBounds |= v.missingOutOfBounds();
         }
         if (missing || outOfBounds) {
-          for (Invariant inv : slice.invs) {
-            Stats s = stats.get(inv);
-            if (s != null) {
-              if (missing) {
-                s.skippedMissing++;
-              } else {
-                s.skippedOutOfBounds++;
+          if (!diagnostic) {
+            for (Invariant inv : slice.invs) {
+              Stats s = stats.get(inv);
+              if (s != null) {
+                if (missing) {
+                  s.skippedMissing++;
+                } else {
+                  s.skippedOutOfBounds++;
+                }
               }
             }
           }
@@ -406,21 +390,36 @@ public class DaikonCandidateChecker {
             continue;
           }
           InvariantStatus status = check(inv, slice, vt);
-          s.evaluations++;
-          if (status != InvariantStatus.NO_CHANGE) {
-            if (propagated) {
-              s.violationsPropagatedAll++;
-            } else {
-              s.violationsNonPropagated++;
+          boolean violated = status != InvariantStatus.NO_CHANGE;
+          if (diagnostic) {
+            s.diagEvaluations++;
+            if (violated) {
+              if (propagated) {
+                s.diagViolationsPropagatedUnmatchedEntry++;
+              } else {
+                s.diagViolationsUnmatchedEntry++;
+              }
+              if (s.firstDiagViolations.size() < maxViolations) {
+                s.firstDiagViolations.add(
+                    violation(
+                        slice,
+                        vt,
+                        status,
+                        propagated ? "propagated_unmatched_entry" : "unmatched_entry"));
+              }
             }
-            if (rootEnterNonce != null) {
-              pendingByNonce
-                  .computeIfAbsent(rootEnterNonce, k -> new ArrayList<>())
-                  .add(new Object[] {s, propagated});
-            }
-            if (s.firstViolations.size() < maxViolations) {
-              s.firstViolations.add(
-                  new Violation(violation(ppt, slice, vt, status, propagated), rootEnterNonce, propagated));
+          } else {
+            s.evaluations++;
+            if (violated) {
+              if (propagated) {
+                s.violationsPropagated++;
+              } else {
+                s.violationsDirect++;
+              }
+              if (s.firstViolations.size() < maxViolations) {
+                s.firstViolations.add(
+                    violation(slice, vt, status, propagated ? "propagated" : "direct"));
+              }
             }
           }
         }
@@ -454,7 +453,7 @@ public class DaikonCandidateChecker {
       }
       FileIO.compute_derived_variables(parent, vals, mods);
       propagatedSamples++;
-      add(parent, new ValueTuple(vals, mods), all_ppts, visited, true, rootEnterNonce);
+      add(parent, new ValueTuple(vals, mods), all_ppts, visited, true, diagnostic);
     }
   }
 
@@ -477,8 +476,7 @@ public class DaikonCandidateChecker {
     }
   }
 
-  static String violation(
-      PptTopLevel ppt, PptSlice slice, ValueTuple vt, InvariantStatus status, boolean propagated) {
+  static String violation(PptSlice slice, ValueTuple vt, InvariantStatus status, String origin) {
     StringBuilder sb = new StringBuilder("{\"values\":{");
     for (int i = 0; i < slice.var_infos.length; i++) {
       if (i > 0) {
@@ -490,9 +488,9 @@ public class DaikonCandidateChecker {
     }
     sb.append("},");
     kv(sb, "status", status.toString()).append(',');
-    sb.append("\"propagated\":").append(propagated).append(',');
-    sb.append("\"line\":").append(FileIO.get_linenum()).append(',');
-    kv(sb, "file", FileIO.data_trace_state == null ? null : FileIO.data_trace_state.filename);
+    kv(sb, "origin", origin).append(',');
+    sb.append("\"line\":").append(curLine).append(',');
+    kv(sb, "file", curFile);
     return sb.append('}').toString();
   }
 
@@ -509,6 +507,21 @@ public class DaikonCandidateChecker {
       return "\"" + val + "\"";
     }
     return String.valueOf(val);
+  }
+
+  static void num(StringBuilder sb, String k, long v) {
+    str(sb, k).append(':').append(v).append(',');
+  }
+
+  static StringBuilder list(StringBuilder sb, String k, List<String> items) {
+    str(sb, k).append(":[");
+    for (int i = 0; i < items.size(); i++) {
+      if (i > 0) {
+        sb.append(',');
+      }
+      sb.append(items.get(i));
+    }
+    return sb.append(']');
   }
 
   static StringBuilder kv(StringBuilder sb, String k, String v) {
