@@ -10,7 +10,7 @@ by default one section for the latest 5 and one for the latest 10 bugs per
 project.
 
 Usage:
-    python3 check_oca_hitrate.py [--last N] [--out-root outputs_usefulness] [--csv bugs_last10.csv,bugs.csv] [--no-invariants]
+    python3 check_oca_hitrate.py [--last N] [--out-root outputs_usefulness] [--csv bugs_last10.csv,bugs.csv] [--no-invariants] [--include-dropped]
 """
 import argparse
 import json
@@ -21,8 +21,8 @@ from oca_status import oca_status
 from rq5_check import RunIncompleteError, compute_rq5
 
 
-def report(out_root: Path, by_project: dict, label: str, list_invariants: bool):
-    print(f'######## {out_root} -- {label} (excluded: {", ".join(DROPPED_PROJECTS)}) ########')
+def report(out_root: Path, by_project: dict, label: str, list_invariants: bool, exclude=DROPPED_PROJECTS):
+    print(f'######## {out_root} -- {label} (excluded: {", ".join(exclude) or "none"}) ########')
     in_scope = checked = hit = catches = 0
     not_done = {}
     for p in sorted(by_project):
@@ -69,9 +69,12 @@ def main():
     ap.add_argument('--out-root', default='outputs_usefulness')
     ap.add_argument('--csv', default='bugs_last10.csv,bugs.csv')
     ap.add_argument('--no-invariants', action='store_true', help='omit the caught invariants')
+    ap.add_argument('--include-dropped', action='store_true', help=f'also include {", ".join(DROPPED_PROJECTS)}')
     args = ap.parse_args()
     for n in ([args.last] if args.last else [5, 10]):
-        report(Path(args.out_root), bugs_by_project(args.csv, n), f'LATEST {n} BUGS PER PROJECT', not args.no_invariants)
+        exclude = () if args.include_dropped else DROPPED_PROJECTS
+        report(Path(args.out_root), bugs_by_project(args.csv, n, exclude), f'LATEST {n} BUGS PER PROJECT',
+               not args.no_invariants, exclude)
 
 
 if __name__ == '__main__':

@@ -12,7 +12,7 @@ failed, incomplete or not started, are listed separately and never counted
 as misses. "newly caught" / "lost" list the bugs whose verdict changed.
 
 Usage:
-    python3 check_oca_relaxed_hitrate.py [--list]   # --list: print each exposed bug's catches
+    python3 check_oca_relaxed_hitrate.py [--list] [--include-dropped]   # --list: print each exposed bug's catches
 """
 import argparse
 import json
@@ -38,16 +38,18 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--list', action='store_true', help="print each exposed bug's caught invariants")
     ap.add_argument('--csv', default='bugs_last10.csv,bugs.csv')
+    ap.add_argument('--include-dropped', action='store_true', help=f'also include {", ".join(DROPPED_PROJECTS)}')
     args = ap.parse_args()
+    exclude = () if args.include_dropped else DROPPED_PROJECTS
 
     rows = {}
-    for p, ids in bugs_by_project(args.csv, 10).items():
+    for p, ids in bugs_by_project(args.csv, 10, exclude).items():
         for b in ids:
             rows[(p, b)] = (catches(REL / f'{p}_{b}'), catches(ORIG / f'{p}_{b}'))
 
     for n in (5, 10):
-        scope = bugs_by_project(args.csv, n)
-        print(f'######## LATEST {n} BUGS PER PROJECT (excluded: {", ".join(DROPPED_PROJECTS)}) ########')
+        scope = bugs_by_project(args.csv, n, exclude)
+        print(f'######## LATEST {n} BUGS PER PROJECT (excluded: {", ".join(exclude) or "none"}) ########')
         print(f'{"project":<16}{"both":>6}{"relaxed":>9}{"original":>10}  newly caught / lost   | not compared')
         n_both = n_rel = n_orig = 0
         new_all, lost_all, skipped = [], [], {}

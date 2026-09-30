@@ -10,7 +10,7 @@ latest 10: each exposed bug with its number of FALSIFIED invariants and the
 invariants themselves, then a per-bug count table and totals.
 
 Usage:
-    python3 check_daikon_catches.py [--last N] [--no-invariants] [--csv bugs_last10.csv,bugs.csv]
+    python3 check_daikon_catches.py [--last N] [--no-invariants] [--csv bugs_last10.csv,bugs.csv] [--include-dropped]
 
 --last N prints only that scope; --no-invariants omits the invariant lines.
 """
@@ -76,8 +76,8 @@ def falsified_records(p, bid):
     return recs
 
 
-def report(by_project, label, list_invariants):
-    print(f'######## {label} (old text-diff; excluded projects: {", ".join(DROPPED_PROJECTS)}) ########')
+def report(by_project, label, list_invariants, exclude=DROPPED_PROJECTS):
+    print(f'######## {label} (old text-diff; excluded projects: {", ".join(exclude) or "none"}) ########')
     checked, exposed = 0, []
     for p in sorted(by_project):
         for bid in by_project[p]:
@@ -110,9 +110,11 @@ def main():
     ap.add_argument('--csv', default='bugs_last10.csv,bugs.csv')
     ap.add_argument('--no-invariants', action='store_true',
                     help='print only the per-bug counts, not every falsified invariant')
+    ap.add_argument('--include-dropped', action='store_true', help=f'also include {", ".join(DROPPED_PROJECTS)}')
     args = ap.parse_args()
+    exclude = () if args.include_dropped else DROPPED_PROJECTS
     for n in ([args.last] if args.last else [5, 10]):
-        report(bugs_by_project(args.csv, n), f'LATEST {n} BUGS PER PROJECT', not args.no_invariants)
+        report(bugs_by_project(args.csv, n, exclude), f'LATEST {n} BUGS PER PROJECT', not args.no_invariants, exclude)
 
 
 if __name__ == '__main__':

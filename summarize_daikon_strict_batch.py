@@ -12,9 +12,18 @@ attribution was unavailable, if a validated candidate could not be checked
 on the fixed triggering tests, or if none of its checker hits could be
 checked on the fixed version at all (all UNCHECKABLE/UNEXERCISED there).
 
+The default scope is the dataset: the latest --last (5) bugs of each project
+(bugs_last10.csv + bugs.csv) without check_daikon_catches.DROPPED_PROJECTS,
+restricted to the bugs whose old text-diff run reported >= 1 FALSIFIED
+invariant. Pilot results (outputs_daikon_checker/normal,
+outputs_daikon_fixed_validation, outputs_daikon_strict_validation) are used
+for in-scope bugs that have no batch status. Bugs whose old run has not
+finished are listed apart. --extra shows other bugs (e.g. pilot bugs outside
+the scope) in a separate section that is never in the totals.
+
 Usage:
-    python3 summarize_daikon_strict_batch.py --bugs "Codec_17 Gson_18 ..." [--results-root outputs_daikon_strict_batch]
-        [--pilot "Cli_31 Cli_34 Cli_39 Math_106"]   # include earlier pilot results (their own roots)
+    python3 summarize_daikon_strict_batch.py [--last 5] [--include-dropped] [--bugs "Codec_17 Gson_18 ..."]
+        [--results-root outputs_daikon_strict_batch] [--extra "Cli_31 Cli_34"]
 """
 from __future__ import annotations
 
@@ -22,6 +31,8 @@ import argparse
 import datetime
 import json
 from pathlib import Path
+
+from check_daikon_catches import DROPPED_PROJECTS, bugs_by_project
 
 UNCHECKABLE_CATS = ("fixed_trigger_uncheckable", "attribution_unavailable_buggy", "attribution_unavailable_fixed")
 
@@ -64,56 +75,73 @@ def uncheckable_reason(r):
     return None
 
 
+def classify(bug, res: Path, stale_hours: float):
+    """(group, row, note) from the batch status, else from the pilot roots."""
+    st = load(res / "status" / f"{bug}.json")
+    if st is None:
+        r = row_from_dirs(bug, Path("outputs_daikon_checker/normal") / bug,
+                          Path("outputs_daikon_fixed_validation") / bug, Path("outputs_daikon_strict_validation") / bug)
+        if r is None:
+            return "not_started", {"old_falsified": old_count(bug)}, None
+        r["source"] = "pilot"
+    elif st.get("state") == "completed":
+        base = Path(st.get("results_dir") or res)
+        r = row_from_dirs(bug, base / "checker" / "normal" / bug, base / "fixed_validation" / bug, base / "strict" / bug)
+        if r is None:
+            return "incomplete", st, "status completed but results missing under " + str(base)
+        r["source"] = "batch" + (" (traces cleaned)" if st.get("traces_cleaned") else "")
+    elif st.get("state") == "deferred":
+        return "deferred", st, f"free {st.get('free_gb')} GB < {st.get('required_gb')} GB"
+    elif st.get("state") == "failed":
+        return "failed", st, f"stage {st.get('failed_stage')} rc={st.get('exit_code')}: {(st.get('error') or '')[:160]}"
+    else:
+        age = ""
+        try:
+            h = (datetime.datetime.now() - datetime.datetime.fromisoformat(st["updated"])).total_seconds() / 3600
+            age = f"last update {h:.1f} h ago" + (" (STALE: killed or timed out?)" if h > stale_hours else "")
+        except (KeyError, ValueError):
+            pass
+        done = [s for s, v in (st.get("stages_done") or {}).items() if v]
+        return "incomplete", st, f"{st.get('state')}; stages done {done}; {age}"
+    u = uncheckable_reason(r)
+    return ("hit" if r["strict"] else ("uncheckable" if u else "zero")), r, u
+
+
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--bugs", required=True, help="space- or comma-separated <P>_<B>")
+    ap.add_argument("--bugs", default="", help="space- or comma-separated <P>_<B> (default: the dataset scope, see --last)")
+    ap.add_argument("--last", type=int, default=5, help="default scope: latest N bugs per project (default 5)")
+    ap.add_argument("--csv", default="bugs_last10.csv,bugs.csv")
+    ap.add_argument("--include-dropped", action="store_true", help=f"also include {', '.join(DROPPED_PROJECTS)}")
     ap.add_argument("--results-root", default="outputs_daikon_strict_batch")
-    ap.add_argument("--pilot", default="", help="bugs done in the pilot (outputs_daikon_* roots)")
+    ap.add_argument("--pilot", "--extra", dest="extra", default="",
+                    help="bugs OUTSIDE the scope to show in a separate section, never in the totals")
     ap.add_argument("--stale-hours", type=float, default=6.0, help="a 'running' status older than this is shown as stale")
     args = ap.parse_args()
     res = Path(args.results_root)
-    bugs = [b for b in args.bugs.replace(",", " ").split() if b]
-    pilot = [b for b in args.pilot.replace(",", " ").split() if b]
+    exclude = () if args.include_dropped else DROPPED_PROJECTS
+    old_pending = []
+    if args.bugs:
+        bugs = [b for b in args.bugs.replace(",", " ").split() if b and b.rpartition("_")[0] not in exclude]
+        scope = f"--bugs list ({len(bugs)} bugs)"
+    else:
+        bugs = []
+        for p, ids in sorted(bugs_by_project(args.csv, args.last, exclude).items()):
+            for b in ids:
+                n = old_count(f"{p}_{b}")
+                if n is None:
+                    old_pending.append(f"{p}_{b}")
+                elif n > 0:
+                    bugs.append(f"{p}_{b}")
+        scope = f"latest {args.last} bugs per project with >=1 old text-diff FALSIFIED ({len(bugs)} bugs)"
+    extra = [b for b in args.extra.replace(",", " ").split() if b and b not in bugs]
+    print(f"scope: {scope}; excluded projects: {', '.join(exclude) or 'none'}")
+    print()
 
     groups = {k: [] for k in ("hit", "zero", "uncheckable", "deferred", "failed", "incomplete", "not_started")}
-    for bug in pilot:
-        r = row_from_dirs(bug, Path("outputs_daikon_checker/normal") / bug,
-                          Path("outputs_daikon_fixed_validation") / bug, Path("outputs_daikon_strict_validation") / bug)
-        if r:
-            r["source"] = "pilot"
-            u = uncheckable_reason(r)
-            groups["hit" if r["strict"] else ("uncheckable" if u else "zero")].append((bug, r, u))
-        else:
-            groups["incomplete"].append((bug, {"source": "pilot"}, "pilot results incomplete"))
     for bug in bugs:
-        st = load(res / "status" / f"{bug}.json")
-        if st is None:
-            groups["not_started"].append((bug, {}, None))
-            continue
-        state = st.get("state")
-        if state == "completed":
-            base = Path(st.get("results_dir") or res)
-            r = row_from_dirs(bug, base / "checker" / "normal" / bug, base / "fixed_validation" / bug, base / "strict" / bug)
-            if r is None:
-                groups["incomplete"].append((bug, st, "status completed but results missing under " + str(base)))
-                continue
-            r["source"] = "batch" + (" (traces cleaned)" if st.get("traces_cleaned") else "")
-            u = uncheckable_reason(r)
-            groups["hit" if r["strict"] else ("uncheckable" if u else "zero")].append((bug, r, u))
-        elif state == "deferred":
-            groups["deferred"].append((bug, st, f"free {st.get('free_gb')} GB < {st.get('required_gb')} GB"))
-        elif state == "failed":
-            groups["failed"].append((bug, st, f"stage {st.get('failed_stage')} rc={st.get('exit_code')}: "
-                                              f"{(st.get('error') or '')[:160]}"))
-        else:
-            age = ""
-            try:
-                h = (datetime.datetime.now() - datetime.datetime.fromisoformat(st["updated"])).total_seconds() / 3600
-                age = f"last update {h:.1f} h ago" + (" (STALE: killed or timed out?)" if h > args.stale_hours else "")
-            except (KeyError, ValueError):
-                pass
-            done = [s for s, v in (st.get("stages_done") or {}).items() if v]
-            groups["incomplete"].append((bug, st, f"{state}; stages done {done}; {age}"))
+        g, r, note = classify(bug, res, args.stale_hours)
+        groups[g].append((bug, r, note))
 
     def table(title, rows):
         print(f"######## {title} ({len(rows)}) ########")
@@ -149,6 +177,13 @@ def main():
           f"STRICT={len(groups['hit'])}  uncheckable={len(groups['uncheckable'])}")
     print(f"not completed: deferred={len(groups['deferred'])} failed={len(groups['failed'])} "
           f"incomplete={len(groups['incomplete'])} not started={len(groups['not_started'])}")
+    if old_pending:
+        print()
+        print(f"######## OLD TEXT-DIFF RESULT MISSING -- not yet known whether in scope ({len(old_pending)}) ########")
+        print(" ".join(old_pending))
+    if extra:
+        print()
+        table("OUTSIDE THE SCOPE (not in the totals)", [(b, *classify(b, res, args.stale_hours)[1:]) for b in extra])
 
 
 if __name__ == "__main__":

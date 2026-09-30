@@ -10,7 +10,7 @@ marker run_usefulness_bug.py writes itself, or its job log); unverified,
 failed and incomplete runs are counted separately.
 
 Usage:
-    python3 check_oca_progress.py [--out-root outputs_usefulness] [--csv bugs_last10.csv,bugs.csv] [--missing]
+    python3 check_oca_progress.py [--out-root outputs_usefulness] [--csv bugs_last10.csv,bugs.csv] [--missing] [--include-dropped]
 
 --missing also lists the bug ids that are not complete, by state.
 """
@@ -25,10 +25,10 @@ from oca_status import oca_status
 STATES = ("complete", "unverified", "failed", "incomplete", "not_started")
 
 
-def report(out_root: Path, csv_paths: str, show_missing: bool):
+def report(out_root: Path, csv_paths: str, show_missing: bool, exclude=DROPPED_PROJECTS):
     for n in (5, 10):
-        bp = bugs_by_project(csv_paths, n)
-        print(f"######## {out_root} -- LATEST {n} BUGS PER PROJECT (excluded: {', '.join(DROPPED_PROJECTS)}) ########")
+        bp = bugs_by_project(csv_paths, n, exclude)
+        print(f"######## {out_root} -- LATEST {n} BUGS PER PROJECT (excluded: {', '.join(exclude) or 'none'}) ########")
         print(f'{"project":<16}{"complete":>10}{"unverified":>11}{"failed":>8}{"incomplete":>11}{"not started":>12}')
         tot = dict.fromkeys(STATES, 0)
         n_all = 0
@@ -55,8 +55,9 @@ def main():
     ap.add_argument("--out-root", default="outputs_usefulness")
     ap.add_argument("--csv", default="bugs_last10.csv,bugs.csv")
     ap.add_argument("--missing", action="store_true")
+    ap.add_argument("--include-dropped", action="store_true", help=f"also include {', '.join(DROPPED_PROJECTS)}")
     args = ap.parse_args()
-    report(Path(args.out_root), args.csv, args.missing)
+    report(Path(args.out_root), args.csv, args.missing, () if args.include_dropped else DROPPED_PROJECTS)
 
 
 if __name__ == "__main__":

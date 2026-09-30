@@ -10,11 +10,12 @@ unverified, failed and incomplete (running or killed) runs are listed
 separately by bug id.
 
 Usage:
-    python3 check_oca_relaxed_progress.py [--csv bugs_last10.csv,bugs.csv]
+    python3 check_oca_relaxed_progress.py [--csv bugs_last10.csv,bugs.csv] [--include-dropped]
 """
 import argparse
 from pathlib import Path
 
+from check_daikon_catches import DROPPED_PROJECTS
 from check_oca_progress import report
 
 OUT = Path('outputs_usefulness_relaxed')
@@ -23,8 +24,9 @@ OUT = Path('outputs_usefulness_relaxed')
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--csv', default='bugs_last10.csv,bugs.csv')
+    ap.add_argument('--include-dropped', action='store_true', help=f'also include {", ".join(DROPPED_PROJECTS)}')
     args = ap.parse_args()
-    report(OUT, args.csv, show_missing=True)
+    report(OUT, args.csv, show_missing=True, exclude=() if args.include_dropped else DROPPED_PROJECTS)
 
 
 if __name__ == '__main__':
