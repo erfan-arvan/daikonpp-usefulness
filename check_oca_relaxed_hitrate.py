@@ -45,7 +45,10 @@ def main():
     rows = {}
     for p, ids in bugs_by_project(args.csv, 10, exclude).items():
         for b in ids:
-            rows[(p, b)] = (catches(REL / f'{p}_{b}'), catches(ORIG / f'{p}_{b}'))
+            rel = catches(REL / f'{p}_{b}')
+            # The original run only matters where the relaxed one is complete;
+            # skipping the rest avoids parsing large outcome files for nothing.
+            rows[(p, b)] = (rel, catches(ORIG / f'{p}_{b}') if rel[0] is not None else (None, 'not needed'))
 
     for n in (5, 10):
         scope = bugs_by_project(args.csv, n, exclude)
