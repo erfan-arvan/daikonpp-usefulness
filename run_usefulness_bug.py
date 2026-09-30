@@ -82,7 +82,13 @@ def build_daikonpp(dpp_dir: Path) -> Path:
     # this by detecting the ambient JDK and exporting DP_JAVA_VERSION to
     # match it; do the same here for the identical `./gradlew shadowJar`
     # call this script makes on its own.
-    env = os.environ.copy()
+    #
+    # The build runs daikonplusplus's unit tests, which read DP_* settings
+    # from the environment -- e.g. submit_oca_relaxed.sh's
+    # DP_QUALITY_FILTER_*=false make InvariantQualityFilterTest fail. Build
+    # with no DP_* set (except DP_JAVA_VERSION); the Oca runs in phase()
+    # still get the full environment.
+    env = {k: v for k, v in os.environ.items() if not k.startswith("DP_") or k == "DP_JAVA_VERSION"}
     java_home = env.get("DPP_JAVA_HOME")
     java_bin = f"{java_home}/bin/java" if java_home else "java"
     try:
