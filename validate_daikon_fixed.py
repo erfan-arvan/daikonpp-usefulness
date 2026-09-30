@@ -147,6 +147,9 @@ def main():
     ap.add_argument("--out-root", default=None, help="default: $ROOT/outputs_daikon_fixed_validation")
     ap.add_argument("--max-violations", type=int, default=5)
     ap.add_argument("--force", action="store_true")
+    ap.add_argument("--null-trace", default=None,
+                    help="use this null trace (from make_null_trace.py; its directory must hold "
+                         "NULL_TRACE_COMPLETE) instead of the checker's null/<P>_<B>/traceNull.dtrace.gz")
     args = ap.parse_args()
 
     jar = os.environ.get("DAIKON_JAR")
@@ -170,7 +173,11 @@ def main():
     # ---- saved inputs (read only)
     inv_a, invariants_a = nd / "invA.inv.gz", nd / "invariantsA.txt"
     trace_a, trace_full, trace_null = nd / "traceA.dtrace.gz", nd / "traceFull.dtrace.gz", ud / "traceNull.dtrace.gz"
-    need = [nd / rc.COMPLETE, ud / rc.COMPLETE, inv_a, invariants_a, trace_a, trace_full, trace_null,
+    null_done = ud / rc.COMPLETE
+    if args.null_trace:
+        trace_null = Path(args.null_trace).resolve()
+        null_done = trace_null.parent / "NULL_TRACE_COMPLETE"
+    need = [nd / rc.COMPLETE, null_done, inv_a, invariants_a, trace_a, trace_full, trace_null,
             nd / "daikon_checker_outcomes.jsonl", nd / "baseline_A" / "daikon_checker_outcomes.jsonl", nd / "run_info.json"]
     missing = [str(p) for p in need if not p.is_file()]
     if missing:
@@ -186,7 +193,7 @@ def main():
     hits = sorted(k for k, o in normal.items() if o["verdict"] == "FALSIFIED")
     triggering = [tuple(t.split("::", 1)) for t in ninfo["triggering"]]
     info = {"project": args.project, "bug_id": args.bug_id, "daikon_jar": jar, "checker_normal_dir": str(nd),
-            "checker_null_dir": str(ud), "triggering": ninfo["triggering"], "buggy_falsified": len(hits),
+            "checker_null_dir": str(ud), "null_trace": str(trace_null), "triggering": ninfo["triggering"], "buggy_falsified": len(hits),
             "started": datetime.datetime.now().isoformat()}
 
     d4j = d4j_env()
