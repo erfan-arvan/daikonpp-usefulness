@@ -27,13 +27,28 @@ daikon_diff_invariants.is_overfit_prone_invariant() is False. Each is mapped
 to the invariant object that PrintInvariants printed it from (same printed
 text at the same ppt). Verdicts:
 
-  FALSIFIED    >= 1 Phase-B sample violated it (counted once per invariant)
-  HELD         evaluated on >= 1 sample, never violated
-  UNEXERCISED  no applicable sample (ppt never reached, or every sample had
-               one of its variables missing)
-  UNCHECKABLE  could not be mapped to exactly one active invariant of invA
-               (e.g. implications, ambiguous text), or the stock checker
-               reported a violation the wrapper did not
+  FALSIFIED            >= 1 Phase-B sample violated it (counted once per
+                       invariant); "falsified_by" says where the violations
+                       came from (see below)
+  HELD                 evaluated on >= 1 sample, never violated
+  UNEXERCISED          no applicable sample at all: its ppt was never reached
+  UNEVALUATED_MISSING  its ppt was reached, but on every such sample one of
+                       its variables was missing (nonsensical/flow) or out of
+                       bounds, so it was never evaluated
+  UNCHECKABLE          could not be mapped to exactly one active invariant of
+                       invA (e.g. implications, ambiguous text), or the stock
+                       checker and the wrapper disagree on its own path
+
+Violation origins (counts per candidate; falsified_by is the first that is
+nonzero, in this order):
+  direct                      a sample of this ppt (or EXITnn -> EXIT) from a
+                              call that returned -- what the stock checker sees
+  unmatched_entry             an ENTER sample of a call that never returned
+  propagated                  reached an OBJECT/CLASS ppt through the hierarchy
+  propagated_unmatched_entry  the same, rooted at an unmatched ENTER sample
+
+In --null mode, phase B must run exactly the tests phase A ran, with the
+same multiplicities; otherwise the run fails without a completion marker.
 
 Outputs, in <out-root>/<normal|null>/<PROJECT>_<BUG>/ (nothing under
 outputs_usefulness/ is touched): the traces, invA.inv.gz, invariantsA.txt,
@@ -48,6 +63,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import collections
 import datetime
 import json
 import os
@@ -89,6 +105,8 @@ STOCK_LINE = re.compile(r"^At ppt (.*?), Invariant '(.*)' invalidated by sample 
 DAIKON_CONFIG = ["daikon.split.PptSplitter.disable_splitting=true", *DAIKON_EXTRA_CONFIG]
 
 COMPLETE = "CHECKER_COMPLETE"
+VERDICTS = ("FALSIFIED", "HELD", "UNEXERCISED", "UNEVALUATED_MISSING", "UNCHECKABLE")
+ORIGINS = ("direct", "unmatched_entry", "propagated", "propagated_unmatched_entry")
 
 
 class InfraError(RuntimeError):
@@ -216,6 +234,21 @@ def verify_tests(label: str, ran: list[str], triggering: list[tuple[str, str]], 
     return {"tests_ran": len(ran_set), "triggering_present": present, "triggering_missing": missing}
 
 
+def verify_same_inventory(ran_a: list[str], ran_b: list[str], record: dict):
+    """--null: phase B must execute the same tests as phase A, each the
+    same number of times. The comparison is stored in `record` first, so
+    run_info.json shows it even when this raises."""
+    ca, cb = collections.Counter(ran_a), collections.Counter(ran_b)
+    diff = {t: {"A": ca.get(t, 0), "B": cb.get(t, 0)} for t in sorted(set(ca) | set(cb)) if ca.get(t) != cb.get(t)}
+    record.update({"tests_executed_a": sum(ca.values()), "tests_executed_b": sum(cb.values()),
+                   "inventory_diff": diff})
+    if diff:
+        shown = ", ".join(f"{t} (A={d['A']}, B={d['B']})" for t, d in list(diff.items())[:10])
+        raise InfraError(f"null mode: phase B's executed tests differ from phase A's in {len(diff)} "
+                         f"test(s): {shown}{' ...' if len(diff) > 10 else ''}")
+    print(f"[INFO] null mode: phase B executed the same {sum(cb.values())} tests as phase A (verified)")
+
+
 def run_daikon(daikon_jar, trace: Path, out_inv: Path, pkg_pattern: str, log: Path):
     # The temp name must end in ".gz" (Daikon decides compression by suffix).
     tmp_out = out_inv.with_name(out_inv.stem + ".tmp" + out_inv.suffix)
@@ -310,14 +343,20 @@ def classify(invariants_a_text: str, records: list[dict], stock_failed: set | No
         if r["format"] is not None:
             by_format.setdefault((r["ppt"], r["format"]), []).append(r)
 
-    # Stock-checker cross-check. The wrapper sees a superset of the samples
-    # the stock checker checks, so every stock failure must be a wrapper
-    # violation on the stock checker's own path (violations_direct).
+    # Stock-checker cross-check, both ways, on the stock checker's own path:
+    # violations_direct excludes unmatched-ENTER and propagated samples,
+    # which the stock checker never checks.
     disagree: set[tuple[str, str]] = set()
+    stock_only: set[tuple[str, str]] = set()
+    wrapper_only: set[tuple[str, str]] = set()
     if stock_failed is not None:
         for key in stock_failed:
             if not any(r["violations_direct"] > 0 for r in by_format.get(key, [])):
-                disagree.add(key)
+                stock_only.add(key)
+        for r in records:
+            if r["violations_direct"] > 0 and (r["ppt"], r["format"]) not in stock_failed:
+                wrapper_only.add((r["ppt"], r["format"]))
+        disagree = stock_only | wrapper_only
 
     outcomes = []
     parsed = parse_daikon_invariants(invariants_a_text)
@@ -342,32 +381,33 @@ def classify(invariants_a_text: str, records: list[dict], stock_failed: set | No
             info = {
                 "daikon_class": r["class"], "vars": r["vars"],
                 "evaluations": r["evaluations"], "violations": r["violations"],
-                "violations_direct": r["violations_direct"],
-                "violations_propagated": r["violations_propagated"],
+                **{f"violations_{o}": r[f"violations_{o}"] for o in ORIGINS},
                 "skipped_missing": r["skipped_missing"],
+                "skipped_out_of_bounds": r["skipped_out_of_bounds"],
                 "violating_samples": r["first_violations"],
             }
             if not r["active"]:
                 outcomes.append({**row, "verdict": "UNCHECKABLE", "reason": "invariant is not active", **info})
             elif (r["ppt"], r["format"]) in disagree:
-                outcomes.append({**row, "verdict": "UNCHECKABLE",
-                                 "reason": "stock InvariantChecker reports a violation the wrapper does not", **info})
+                why = ("stock InvariantChecker reports a violation the wrapper does not"
+                       if (r["ppt"], r["format"]) in stock_only else
+                       "wrapper reports a direct violation the stock InvariantChecker does not")
+                outcomes.append({**row, "verdict": "UNCHECKABLE", "reason": why, **info})
             elif r["violations"] > 0:
-                outcomes.append({**row, "verdict": "FALSIFIED", **info})
+                by = next(o for o in ORIGINS if r[f"violations_{o}"] > 0)
+                outcomes.append({**row, "verdict": "FALSIFIED", "falsified_by": by, **info})
             elif r["evaluations"] > 0:
                 outcomes.append({**row, "verdict": "HELD", **info})
+            elif r["skipped_missing"] + r["skipped_out_of_bounds"] > 0:
+                outcomes.append({**row, "verdict": "UNEVALUATED_MISSING", **info})
             else:
                 outcomes.append({**row, "verdict": "UNEXERCISED", **info})
 
-    wrapper_only = sum(1 for r in records if r["violations_direct"] > 0
-                       and stock_failed is not None and (r["ppt"], r["format"]) not in stock_failed)
     cross = {
         "stock_checked": stock_failed is not None,
         "stock_failed": len(stock_failed) if stock_failed is not None else None,
-        "stock_only_disagreements": sorted(f"{p} :: {i}" for p, i in disagree),
-        # Expected >0 only from ENTER samples of calls that never returned
-        # (the stock checker only checks an ENTER sample at its EXIT).
-        "wrapper_only_direct_violations": wrapper_only if stock_failed is not None else None,
+        "stock_only_disagreements": sorted(f"{p} :: {i}" for p, i in stock_only),
+        "wrapper_only_disagreements": sorted(f"{p} :: {i}" for p, i in wrapper_only),
     }
     return outcomes, cross
 
@@ -495,7 +535,7 @@ def main():
                                 trace_b, work_dir, specs_b, logs / "chicory_B.log")
         info["verify_b"] = verify_tests(f"phase B ({mode})", ran_b, triggering, expect_present=(mode == "normal"))
         if mode == "null":
-            info["verify_b"]["same_tests_as_a"] = sorted(ran_a) == sorted(ran_b)
+            verify_same_inventory(ran_a, ran_b, info["verify_b"].setdefault("null_inventory", {}))
 
         # ---- Check invA (frozen) against trace B
         checker_classes = compile_checker(daikon_jar, out_dir / "checker-classes", logs / "javac_checker.log")
@@ -509,17 +549,18 @@ def main():
         cross["stock_unparsed_lines"] = unparsed
         write_outcomes(out_dir / "daikon_checker_outcomes.jsonl", outcomes)
 
-        counts = {v: sum(1 for o in outcomes if o["verdict"] == v)
-                  for v in ("FALSIFIED", "HELD", "UNEXERCISED", "UNCHECKABLE")}
-        info.update({"counts": counts, "candidates": len(outcomes), "cross_check": cross,
+        counts = {v: sum(1 for o in outcomes if o["verdict"] == v) for v in VERDICTS}
+        falsified_by = {o: sum(1 for x in outcomes if x.get("falsified_by") == o) for o in ORIGINS}
+        info.update({"counts": counts, "falsified_by": falsified_by, "candidates": len(outcomes), "cross_check": cross,
                      "checker_summary": json.loads(summary_path.read_text())})
         write_atomic(out_dir / "run_info.json", json.dumps(info, indent=1))
         write_atomic(marker, json.dumps({"finished": datetime.datetime.now().isoformat(), **counts}) + "\n")
         print("=" * 60)
         print(f">>> DONE {args.project}-{args.bug_id} [{mode}]: candidates={len(outcomes)} {counts}")
-        if cross["stock_only_disagreements"]:
-            print(f"[WARN] {len(cross['stock_only_disagreements'])} stock-checker disagreement(s), "
-                  "marked UNCHECKABLE (see run_info.json)")
+        print(f"    FALSIFIED by origin: {falsified_by}")
+        n_dis = len(cross["stock_only_disagreements"]) + len(cross["wrapper_only_disagreements"])
+        if n_dis:
+            print(f"[WARN] {n_dis} stock-checker disagreement(s), marked UNCHECKABLE (see run_info.json)")
         print("=" * 60)
     except Exception as e:
         info["error"] = f"{type(e).__name__}: {e}"

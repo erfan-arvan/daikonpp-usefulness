@@ -7,9 +7,12 @@ For each bug:
          split into "ppt missing" (the ppt has no block at all in
          invariantsFull.txt) and "ppt present" (the ppt is printed, the
          invariant text is not)
-  new    FALSIFIED / HELD / UNEXERCISED / UNCHECKABLE from
-         <out-root>/normal/<P>_<B>/daikon_checker_outcomes.jsonl
-  null   FALSIFIED from <out-root>/null/<P>_<B>/
+  new    FALSIFIED / HELD / UNEXERCISED / UNEVALUATED_MISSING / UNCHECKABLE
+         from <out-root>/normal/<P>_<B>/daikon_checker_outcomes.jsonl, with
+         FALSIFIED split by where the violations came from (falsified_by):
+         direct / unmatched ENTER / OBJECT-CLASS propagated / propagated
+         from an unmatched ENTER
+  null   FALSIFIED from <out-root>/null/<P>_<B>/, split the same way
   a few FALSIFIED invariants with their violating samples
 
 Completed runs (CHECKER_COMPLETE present, including runs with zero results)
@@ -27,8 +30,10 @@ import json
 from pathlib import Path
 
 from daikon_diff_invariants import parse_daikon_invariants
+from run_daikon_checker_bug import ORIGINS, VERDICTS
 
-VERDICTS = ("FALSIFIED", "HELD", "UNEXERCISED", "UNCHECKABLE")
+ORIGIN_SHORT = {"direct": "dir", "unmatched_entry": "unm", "propagated": "prop",
+                "propagated_unmatched_entry": "p-unm"}
 
 
 def read_jsonl(path: Path) -> list[dict]:
@@ -71,6 +76,15 @@ def counts(outcomes: list[dict]) -> dict[str, int]:
     return {v: sum(1 for o in outcomes if o["verdict"] == v) for v in VERDICTS}
 
 
+def by_origin(outcomes: list[dict]) -> dict[str, int]:
+    return {o: sum(1 for x in outcomes if x.get("falsified_by") == o) for o in ORIGINS}
+
+
+def origin_str(outcomes: list[dict]) -> str:
+    b = by_origin(outcomes)
+    return "/".join(str(b[o]) for o in ORIGINS)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--bugs", default="", help="comma-separated <Project>_<Bug> (default: every bug found)")
@@ -98,17 +112,26 @@ def main():
         n, miss, pres = old[:3]
         return f"{n:>6}{'?' if miss is None else miss:>9}{'?' if pres is None else pres:>9}"
 
+    orig_hdr = "/".join(ORIGIN_SHORT[o] for o in ORIGINS)
     print("######## COMPLETED (normal run finished; zero counts are real zeros) ########")
-    print(f'{"bug":<16}{"old":>6}{"ppt-miss":>9}{"ppt-pres":>9} |{"FALS":>6}{"HELD":>7}{"UNEX":>6}{"UNCHK":>6} |{"null FALS":>10}')
+    print(f'{"bug":<16}{"old":>6}{"ppt-miss":>9}{"ppt-pres":>9} |{"FALS":>6} {orig_hdr:>16}{"HELD":>7}{"UNEX":>6}'
+          f'{"MISS":>6}{"UNCHK":>6} |{"null FALS":>10} {orig_hdr:>16}')
     for bug, _, outcomes, nstate, noutcomes, old in complete:
         c = counts(outcomes)
-        null = str(counts(noutcomes)["FALSIFIED"]) if noutcomes is not None else (
-            "not run" if nstate == "not run" else "failed" if nstate.startswith("failed") else "incompl.")
-        print(f"{bug:<16}{old_cols(old)} |{c['FALSIFIED']:>6}{c['HELD']:>7}{c['UNEXERCISED']:>6}{c['UNCHECKABLE']:>6} |{null:>10}")
+        if noutcomes is not None:
+            null, null_orig = str(counts(noutcomes)["FALSIFIED"]), origin_str(noutcomes)
+        else:
+            null = "not run" if nstate == "not run" else "failed" if nstate.startswith("failed") else "incompl."
+            null_orig = ""
+        print(f"{bug:<16}{old_cols(old)} |{c['FALSIFIED']:>6} {origin_str(outcomes):>16}{c['HELD']:>7}"
+              f"{c['UNEXERCISED']:>6}{c['UNEVALUATED_MISSING']:>6}{c['UNCHECKABLE']:>6} |{null:>10} {null_orig:>16}")
     if not complete:
         print("  (none)")
     print("  old = daikon_outcomes.jsonl FALSIFIED (text diff); ppt-miss / ppt-pres = its ppt is absent from /")
-    print("  present in invariantsFull.txt. FALS/HELD/UNEX/UNCHK = checker verdicts on the same kind of candidates.")
+    print("  present in invariantsFull.txt. FALS/HELD/UNEX/MISS/UNCHK = checker verdicts (MISS = UNEVALUATED_MISSING:")
+    print("  ppt reached, but every sample had a missing/out-of-bounds variable; UNEX = ppt never reached).")
+    print(f"  {orig_hdr} = FALSIFIED by origin: direct (the stock checker's path) / unmatched ENTER (call never")
+    print("  returned) / propagated to OBJECT-CLASS / propagated from an unmatched ENTER.")
     print()
 
     print("######## INCOMPLETE / NOT RUN ########")
@@ -140,17 +163,19 @@ def main():
         if reasons:
             print(f"    UNCHECKABLE reasons: {reasons}")
         for o in fals[: args.examples]:
+            split = ", ".join(f"{ORIGIN_SHORT[g]}={o[f'violations_{g}']}" for g in ORIGINS if o[f"violations_{g}"])
             print(f"    {o['ppt']}")
-            print(f"        {o['invariant']}   (violations={o['violations']} of {o['evaluations']} evaluations"
-                  f"{', via OBJECT/CLASS propagation' if o.get('violations_direct') == 0 else ''})")
+            print(f"        {o['invariant']}   (falsified_by={o['falsified_by']}; violations={o['violations']} "
+                  f"[{split}] of {o['evaluations']} evaluations)")
             for s in o.get("violating_samples", [])[:2]:
                 vals = ", ".join(f"{k}={v}" for k, v in s["values"].items())
-                print(f"        sample: {vals}   [{s['status']}, {Path(s['file'] or '').name}:{s['line']}]")
+                print(f"        sample: {vals}   [{s['status']}, {s.get('origin')}, "
+                      f"{Path(s['file'] or '').name}:{s['line']}]")
         if noutcomes is not None:
             nf = [o for o in noutcomes if o["verdict"] == "FALSIFIED"]
-            print(f"    null run: {len(nf)} FALSIFIED of {len(noutcomes)} candidates")
+            print(f"    null run: {len(nf)} FALSIFIED of {len(noutcomes)} candidates, by origin {by_origin(noutcomes)}")
             for o in nf[: args.examples]:
-                print(f"        {o['ppt']} :: {o['invariant']}")
+                print(f"        {o['ppt']} :: {o['invariant']}   (falsified_by={o['falsified_by']})")
         print()
 
 
