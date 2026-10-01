@@ -84,6 +84,10 @@ export DP_AUTOFILTER_MAX_MODIFY_PASSES=200
 # DP_TEST_FILTER=0 for the Oca JVM).
 export DP_TEST_FILTER=false
 
+# Keep Oca's working copies (instrumented project + defects4j checkout)
+# for every phase; see run_usefulness_bug.phase.
+export DP_KEEP_WORK=true
+
 export ROOT="$PWD"
 export DPP_DIR="$ROOT/daikonplusplus"
 
