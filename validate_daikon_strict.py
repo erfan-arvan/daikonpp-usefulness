@@ -88,7 +88,7 @@ _work_dirs: list[Path] = []
 def _sigterm(signum, frame):
     kill_current_subprocess()
     for d in _work_dirs:
-        shutil.rmtree(d, ignore_errors=True)
+        rc.remove_work(d)
     sys.exit(143)
 
 
@@ -223,7 +223,7 @@ def main():
             info[f"verify_{tag}"]["triggering_failed"] = sorted(t for t in trig_names if norm_test(t) in fails)
             if tag == "Fixed" and info["verify_Fixed"]["triggering_failed"]:
                 raise rc.InfraError(f"triggering tests failed under Chicory on fixed: {info['verify_Fixed']['triggering_failed']}")
-            shutil.rmtree(work, ignore_errors=True)
+            rc.remove_work(work)
             traces[tag] = tr
             wt = out / f"trace{tag}TriggerWindows.dtrace.gz"
             marks = json.loads(tr.with_name(tr.name + ".marks.json").read_text())
@@ -337,7 +337,7 @@ def main():
         raise
     finally:
         for d in _work_dirs:
-            shutil.rmtree(d, ignore_errors=True)
+            rc.remove_work(d)
 
 
 if __name__ == "__main__":

@@ -55,8 +55,12 @@ BUG_ID="${BUG_LIST[$i]##*_}"
 echo ">>> strict batch: project=$PROJECT bug=$BUG_ID"
 df -h "$WORK_ROOT" "$DAIKON_WORK_ROOT" "$RESULTS_ROOT" || true
 set +e
+# DAIKON_KEEP_WORK=true (sbatch --export): keep the defects4j checkouts and
+# all traces (no --cleanup-traces); results then stay under $WORK_ROOT.
+CLEANUP=--cleanup-traces
+if [[ "${DAIKON_KEEP_WORK:-}" =~ ^(1|true|yes)$ ]]; then CLEANUP=; echo ">>> DAIKON_KEEP_WORK set: keeping checkouts and traces"; fi
 python3 "$ROOT/run_daikon_strict_batch_bug.py" "$PROJECT" "$BUG_ID" --work-root "$WORK_ROOT" \
-  --results-root "$RESULTS_ROOT" --cleanup-traces
+  --results-root "$RESULTS_ROOT" $CLEANUP
 rc=$?
 set -e
 if [[ $rc -eq 75 ]]; then

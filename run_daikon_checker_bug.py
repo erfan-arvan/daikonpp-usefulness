@@ -144,11 +144,26 @@ class InfraError(RuntimeError):
 _work_dir_for_cleanup: Path | None = None
 
 
+def keep_work() -> bool:
+    """DAIKON_KEEP_WORK=true/1: keep defects4j checkouts (working copies)."""
+    return os.environ.get("DAIKON_KEEP_WORK", "").strip().lower() in ("1", "true", "yes")
+
+
+def remove_work(path) -> None:
+    """Remove a stage's defects4j checkout unless DAIKON_KEEP_WORK is set."""
+    if path is None:
+        return
+    if keep_work():
+        print(f"[INFO] DAIKON_KEEP_WORK set: keeping {path}", flush=True)
+    else:
+        shutil.rmtree(path, ignore_errors=True)
+
+
 def _handle_sigterm(signum, frame):
     kill_current_subprocess()
     if _work_dir_for_cleanup is not None:
         print(f"[INFO] caught SIGTERM -- removing {_work_dir_for_cleanup}", flush=True)
-        shutil.rmtree(_work_dir_for_cleanup, ignore_errors=True)
+        remove_work(_work_dir_for_cleanup)
     sys.exit(143)
 
 
@@ -670,7 +685,7 @@ def main():
         write_atomic(out_dir / "run_info.json", json.dumps(info, indent=1))
         raise
     finally:
-        shutil.rmtree(work_dir, ignore_errors=True)
+        remove_work(work_dir)
 
 
 if __name__ == "__main__":

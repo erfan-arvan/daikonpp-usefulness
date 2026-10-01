@@ -74,8 +74,7 @@ _work_dir: Path | None = None
 
 def _sigterm(signum, frame):
     kill_current_subprocess()
-    if _work_dir is not None:
-        shutil.rmtree(_work_dir, ignore_errors=True)
+    rc.remove_work(_work_dir)
     sys.exit(143)
 
 
@@ -358,7 +357,7 @@ def main():
         rc.write_atomic(out / "run_info.json", json.dumps(info, indent=1))
         raise
     finally:
-        shutil.rmtree(work, ignore_errors=True)
+        rc.remove_work(work)
 
 
 if __name__ == "__main__":
