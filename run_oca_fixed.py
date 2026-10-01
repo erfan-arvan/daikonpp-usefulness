@@ -17,11 +17,11 @@ replay miss. Set OCA_FIXED_ALLOW_LLM=1 to query the real LLM for misses
 (and record them).
 
 Usage:
-    python3 run_oca_fixed.py <PROJECT> [--bug N] [--maxk N] [--out-root outputs_expressiveness]
+    python3 run_oca_fixed.py <PROJECT> [--bug N] [--maxk N] [--out-root outputs_expressiveness] [--label fixed]
 
 Output: <out-root>/<PROJECT>_<N>f/ (default outputs_expressiveness)
-    daikonpp_registry_fixed.jsonl, daikonpp_outcomes_fixed.jsonl, fixed.log,
-    fixed_run_logs/, RUN_COMPLETE
+    daikonpp_registry_<label>.jsonl, daikonpp_outcomes_<label>.jsonl, <label>.log,
+    <label>_run_logs/, RUN_COMPLETE (<label> defaults to "fixed")
 """
 from __future__ import annotations
 
@@ -54,6 +54,8 @@ def main():
     ap.add_argument("--bug", default=None, help="bug id to use instead of the latest one")
     ap.add_argument("--maxk", type=int, default=int(os.environ.get("MAXK", "5")))
     ap.add_argument("--out-root", default="outputs_expressiveness", help="results go to <out-root>/<PROJECT>_<N>f")
+    ap.add_argument("--label", default="fixed",
+                    help="phase label: names the result files and the defects4j/<PROJECT>-<N>f_<label> checkout")
     args = ap.parse_args()
 
     bug_id = args.bug or latest_bug_id(args.project)
@@ -89,7 +91,7 @@ def main():
         maxk=args.maxk,
         disable_bug_test=False,
         disable_real_llm=os.environ.get("OCA_FIXED_ALLOW_LLM") != "1",
-        label="fixed",
+        label=args.label,
         version_suffix="f",
     )
 
