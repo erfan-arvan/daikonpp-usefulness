@@ -75,7 +75,9 @@ export DP_QUALITY_FILTER_SELF_COMPARISON=false
 export DP_QUALITY_FILTER_UNKNOWN_IDENTIFIER=false
 export DP_QUALITY_FILTER_REQUIRE_RESULT_AT_EXIT=false
 export DP_QUALITY_FILTER_REQUIRE_IN_SCOPE_NAME=false
-export DP_QUALITY_FILTER_MAX_LENGTH=false
+# Reruns of failed bugs pass DP_QUALITY_FILTER_MAX_LENGTH=true (sbatch --export).
+export DP_QUALITY_FILTER_MAX_LENGTH="${DP_QUALITY_FILTER_MAX_LENGTH:-false}"
+echo ">>> DP_QUALITY_FILTER_MAX_LENGTH=$DP_QUALITY_FILTER_MAX_LENGTH"
 # Auto-filter: line-level removal passes raised to 200.
 export DP_AUTOFILTER_MAX_MODIFY_PASSES=200
 # Test-driven side-effect isolation off (run_usefulness_bug.py also forces
