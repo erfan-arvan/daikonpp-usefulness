@@ -407,7 +407,13 @@ def phase(
         print(f"[WARN] no daikonpp-run*.log found under {dp_workdir}; "
               "test-run output may be missing")
 
-    shutil.rmtree(dp_workdir, ignore_errors=True)
+    # DP_KEEP_WORK=true/1 in the submitting environment keeps both working
+    # copies (this one and the defects4j checkout below) for inspection.
+    keep_work = os.environ.get("DP_KEEP_WORK", "").strip().lower() in ("1", "true", "yes")
+    if keep_work:
+        print(f"[INFO] DP_KEEP_WORK set: keeping {dp_workdir} and {work_dir}")
+    else:
+        shutil.rmtree(dp_workdir, ignore_errors=True)
 
     elapsed = time.monotonic() - phase_start
     if proc.returncode != 0:
@@ -415,7 +421,8 @@ def phase(
               f"{datetime.now().isoformat(timespec='seconds')} (elapsed {elapsed:.1f}s)")
         raise subprocess.CalledProcessError(proc.returncode, "daikonplusplus")
 
-    shutil.rmtree(work_dir, ignore_errors=True)
+    if not keep_work:
+        shutil.rmtree(work_dir, ignore_errors=True)
 
     print(f"[SYSTEM] {project}-{bug_id} phase={label} finished at "
           f"{datetime.now().isoformat(timespec='seconds')} (elapsed {elapsed:.1f}s)")

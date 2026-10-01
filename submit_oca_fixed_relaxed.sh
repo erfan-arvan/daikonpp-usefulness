@@ -15,7 +15,9 @@
 # version of each project in PROJECTS (default: the six RQ5 table projects);
 # one array task per project, e.g. `sbatch --array=0-5 submit_oca_fixed_relaxed.sh`.
 # Results: outputs_expressiveness_relaxed/<PROJECT>_<N>f/ -- the original
-# fixed-version results in outputs_expressiveness/ are never touched.
+# fixed-version results in outputs_expressiveness/ are never touched. Oca's
+# working copies are kept (DP_KEEP_WORK=true): <out>/dp_workdir_fixed and
+# defects4j/<PROJECT>-<N>f_fixed.
 read -r -a PROJECTS <<< "${PROJECTS:-Cli Codec Collections Gson JxPath Math}"
 
 set -euo pipefail
@@ -44,6 +46,9 @@ export DP_QUALITY_FILTER_REQUIRE_IN_SCOPE_NAME=false
 export DP_QUALITY_FILTER_MAX_LENGTH=false
 export DP_AUTOFILTER_MAX_MODIFY_PASSES=200
 export DP_TEST_FILTER=false
+
+# Keep Oca's working copies (instrumented project + defects4j checkout).
+export DP_KEEP_WORK=true
 
 export ROOT="$PWD"
 export DPP_DIR="$ROOT/daikonplusplus"
