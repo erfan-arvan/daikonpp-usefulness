@@ -12,9 +12,11 @@
 #SBATCH --mem=128G
 
 # Relaxed Oca (same settings as submit_oca_relaxed.sh, same Oca commit) on
-# the FIXED version of each bug in BUGS of PROJECT (default: Collections
-# 24-28), replaying the RQ5 cassettes; one array task per bug, e.g.
-# `sbatch --array=0-4 submit_oca_bugfixed_relaxed.sh`. The relaxed catches of
+# the FIXED version of each bug in BUGS (default: Collections 24-28),
+# replaying the RQ5 cassettes; one array task per bug, e.g.
+# `sbatch --array=0-4 submit_oca_bugfixed_relaxed.sh`. A BUGS entry is a bug
+# id of PROJECT or <Project>_<id>, e.g.
+# `sbatch --array=0-1 --export=ALL,BUGS="Codec_15 Math_105" submit_oca_bugfixed_relaxed.sh`. The relaxed catches of
 # each bug are then checked against it with check_oca_catches_on_fixed.py.
 # Results: outputs_oca_bugfixed_relaxed/<PROJECT>_<N>f/ with label "bugfixed"
 # (checkout defects4j/<PROJECT>-<N>f_bugfixed), so nothing from the
@@ -61,6 +63,10 @@ export DPP_DIR="$ROOT/daikonplusplus"
 [[ -f "$ROOT/usefulness_env.sh" ]] && source "$ROOT/usefulness_env.sh"
 
 BUG="${BUGS[$SLURM_ARRAY_TASK_ID]}"
+if [[ "$BUG" == *_* ]]; then
+  PROJECT="${BUG%_*}"
+  BUG="${BUG##*_}"
+fi
 
 # Private daikonplusplus clone and Gradle home per bug, named so they never
 # collide with the other task copies. A new clone is taken from the
