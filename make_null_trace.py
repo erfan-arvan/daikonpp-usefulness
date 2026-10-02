@@ -88,6 +88,7 @@ def main():
             rc.run_logged(["defects4j", "compile"], logs / "defects4j.log", cwd=work, env=d4j)
             bin_tests = work / capture(["defects4j", "export", "-p", "dir.bin.tests"], cwd=work, env=d4j).strip()
             cp_test = capture(["defects4j", "export", "-p", "cp.test"], cwd=work, env=d4j).strip()
+            rc.ensure_test_classes(work, bin_tests, logs / "defects4j.log", d4j)
             cp_runner = f"{cp_test}:{find_junit4_jar()}"
             runner = out / "runner-classes"
             runner.mkdir(exist_ok=True)

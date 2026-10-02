@@ -126,6 +126,7 @@ def prepare(project, version, work, d4j, logs, tag):
     rc.run_logged(["defects4j", "compile"], logs / f"defects4j_{tag}.log", cwd=work, env=d4j)
     bin_tests = work / capture(["defects4j", "export", "-p", "dir.bin.tests"], cwd=work, env=d4j).strip()
     cp_test = capture(["defects4j", "export", "-p", "cp.test"], cwd=work, env=d4j).strip()
+    rc.ensure_test_classes(work, bin_tests, logs / f"defects4j_{tag}.log", d4j)
     return bin_tests, cp_test
 
 

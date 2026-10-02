@@ -222,6 +222,7 @@ def main():
 
         bin_tests = work / capture(["defects4j", "export", "-p", "dir.bin.tests"], cwd=work, env=d4j).strip()
         cp_test = capture(["defects4j", "export", "-p", "cp.test"], cwd=work, env=d4j).strip()
+        rc.ensure_test_classes(work, bin_tests, logs / "defects4j.log", d4j)
         classes = list_test_classes(str(bin_tests))
         specs = ninfo["specs_b"]
         absent = sorted({s.split("::")[0] for s in specs} - set(classes))

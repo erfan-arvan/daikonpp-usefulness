@@ -167,6 +167,17 @@ def _handle_sigterm(signum, frame):
     sys.exit(143)
 
 
+def ensure_test_classes(work: Path, bin_tests: Path, log: Path, env) -> None:
+    """Rebuilds the tests if a `defects4j export` deleted them. Some exports
+    recompile the main classes, and Mockito's old Ant build.xml makes its
+    `compile` target depend on `clean`, which wipes target/ -- test classes
+    included -- after `defects4j compile` had built them. Call this after the
+    last export of a checkout."""
+    if not list_test_classes(str(bin_tests)):
+        print(f"[INFO] no test classes under {bin_tests} after the exports; recompiling", flush=True)
+        run_logged(["defects4j", "compile"], log, cwd=work, env=env)
+
+
 def run_logged(cmd, log: Path, cwd=None, env=None) -> list[str]:
     """Runs cmd, appending its combined output to `log` (and echoing it).
     Returns the output lines; raises CalledProcessError on a nonzero exit."""
@@ -616,6 +627,7 @@ def main():
         main_src = work_dir / capture(["defects4j", "export", "-p", "dir.src.classes"], cwd=work_dir, env=d4j).strip()
         bin_tests = work_dir / capture(["defects4j", "export", "-p", "dir.bin.tests"], cwd=work_dir, env=d4j).strip()
         cp_test = capture(["defects4j", "export", "-p", "cp.test"], cwd=work_dir, env=d4j).strip()
+        ensure_test_classes(work_dir, bin_tests, logs / "defects4j.log", d4j)
         pkg_pattern = args.pkg_pattern or derive_package_pattern(str(main_src))
         triggering = parse_triggering_tests(
             capture(["defects4j", "info", "-p", args.project, "-b", args.bug_id], env=d4j))
