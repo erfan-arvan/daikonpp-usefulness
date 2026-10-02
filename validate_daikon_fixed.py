@@ -78,6 +78,21 @@ def _sigterm(signum, frame):
     sys.exit(143)
 
 
+def ppt_class(ppt: str) -> str:
+    """Top-level class of a Daikon ppt name, e.g. 'a.b.C$D.m(int):::EXIT7' -> 'a.b.C'."""
+    name = ppt.split(":::")[0]
+    if "(" in name:
+        name = name[:name.index("(")].rsplit(".", 1)[0]
+    return name.split("$")[0]
+
+
+def narrow_pattern(ppts) -> str:
+    """Chicory --ppt-select-pattern for just the classes (and their nested
+    classes) of these ppts. Chicory includes a class or method when the
+    pattern is found in its class, method or ppt name."""
+    return "^(?:" + "|".join(sorted(re.escape(c) for c in {ppt_class(p) for p in ppts})) + r")\b"
+
+
 def read_jsonl(p: Path) -> list[dict]:
     return [json.loads(l) for l in p.read_text().splitlines() if l.strip()]
 
@@ -151,6 +166,9 @@ def main():
                          "NULL_TRACE_COMPLETE) instead of the checker's null/<P>_<B>/traceNull.dtrace.gz")
     ap.add_argument("--no-null", action="store_true",
                     help="3-step pipeline: no null trace and no null check")
+    ap.add_argument("--narrow-trace", action="store_true",
+                    help="trace the fixed version's full suite only in the classes of the buggy-FALSIFIED "
+                         "candidates; with none, finish without tracing (3-step pipeline)")
     args = ap.parse_args()
 
     jar = os.environ.get("DAIKON_JAR")
@@ -180,8 +198,11 @@ def main():
     if args.null_trace:
         trace_null = Path(args.null_trace).resolve()
         null_done = trace_null.parent / "NULL_TRACE_COMPLETE"
+    baseline_checked = ninfo0.get("baseline_checked", True)
     need = [nd / rc.COMPLETE, inv_a, invariants_a, trace_a, trace_full,
-            nd / "daikon_checker_outcomes.jsonl", nd / "baseline_A" / "daikon_checker_outcomes.jsonl", nd / "run_info.json"]
+            nd / "daikon_checker_outcomes.jsonl", nd / "run_info.json"]
+    if baseline_checked:
+        need.append(nd / "baseline_A" / "daikon_checker_outcomes.jsonl")
     if not args.no_null:
         need += [null_done, trace_null]
     missing = [str(p) for p in need if not p.is_file()]
@@ -193,14 +214,25 @@ def main():
     stamp = {str(p): (p.stat().st_size, p.stat().st_mtime_ns) for p in need}
 
     normal = {(o["ppt"], o["invariant"]): o for o in read_jsonl(nd / "daikon_checker_outcomes.jsonl")}
-    baseline = {(o["ppt"], o["invariant"]): o for o in read_jsonl(nd / "baseline_A" / "daikon_checker_outcomes.jsonl")}
+    baseline = ({(o["ppt"], o["invariant"]): o for o in read_jsonl(nd / "baseline_A" / "daikon_checker_outcomes.jsonl")}
+                if baseline_checked else {})
     baseline_bad = {(o["ppt"], o["invariant"]): o for o in ninfo["baseline_A"]["falsified"]}
     hits = sorted(k for k, o in normal.items() if o["verdict"] == "FALSIFIED")
     triggering = [tuple(t.split("::", 1)) for t in ninfo["triggering"]]
     info = {"project": args.project, "bug_id": args.bug_id, "daikon_jar": jar, "checker_normal_dir": str(nd),
             "checker_null_dir": None if args.no_null else str(ud), "null_trace": None if args.no_null else str(trace_null),
             "null_check": not args.no_null, "buggy_phase_b": ninfo.get("phase_b", "full"), "triggering": ninfo["triggering"], "buggy_falsified": len(hits),
+            "baseline_checked": baseline_checked, "narrow_trace": args.narrow_trace,
             "started": datetime.datetime.now().isoformat()}
+    if args.narrow_trace and not hits:
+        # Nothing for the fixed version to confirm: no checkout, no traces.
+        info.update({"validated_hits": 0, "validated_trigger_reached": 0, "skipped_fixed_run": "no buggy-FALSIFIED candidates",
+                     "finished": datetime.datetime.now().isoformat()})
+        rc.write_atomic(out / "validation.jsonl", "")
+        rc.write_atomic(out / "run_info.json", json.dumps(info, indent=1))
+        rc.write_atomic(marker, json.dumps({"validated_hits": 0, "buggy_falsified": 0}) + "\n")
+        print(f">>> VALIDATED {bug}: 0 of 0 buggy-FALSIFIED candidates (nothing falsified; fixed run skipped)")
+        return
 
     d4j = d4j_env()
     work_root = Path(os.environ.get("DAIKON_WORK_ROOT", root / "defects4j"))
@@ -236,7 +268,9 @@ def main():
         absent = sorted({s.split("::")[0] for s in specs} - set(classes))
         if absent:
             raise rc.InfraError(f"test classes of the buggy full suite missing on the fixed version: {absent}")
-        pkg_pattern = ninfo["pkg_pattern"]
+        pkg_pattern = narrow_pattern(k[0] for k in hits) if args.narrow_trace else ninfo["pkg_pattern"]
+        info["fixed_ppt_select_pattern"] = pkg_pattern
+        print(f"[INFO] fixed-version Chicory --ppt-select-pattern={pkg_pattern}")
         omit = build_full_omit_pattern(classes)
         cp_runner = f"{cp_test}:{find_junit4_jar()}"
         runner = out / "runner-classes"
@@ -317,7 +351,8 @@ def main():
                 fixed_verdict, fixed_reason = fx["verdict"], fx.get("reason")
             tg = results.get("fixed_trigger", {}).get(k, {}) if not forced else {}
             checks = {
-                "baseline_held": base.get("verdict") == "HELD" and base.get("evaluations", 0) > 0,
+                **({"baseline_held": base.get("verdict") == "HELD" and base.get("evaluations", 0) > 0}
+                   if baseline_checked else {}),
                 **({} if args.no_null else {"null_not_violated": bool(nul) and nul.get("violations", 1) == 0}),
                 "buggy_falsified": b["verdict"] == "FALSIFIED",
                 "fixed_held": fixed_verdict == "HELD" and (fx or {}).get("evaluations", 0) > 0,
@@ -351,7 +386,8 @@ def main():
         n_val = sum(r["validated"] for r in rows)
         info.update({"validated_hits": n_val, "validated_trigger_reached": sum(r["validated"] and r["trigger_reached_on_fixed"] for r in rows),
                      "failed_check_counts": {c: sum(c in r["failed_checks"] for r in rows)
-                                             for c in ("baseline_held", *(() if args.no_null else ("null_not_violated",)),
+                                             for c in (*(("baseline_held",) if baseline_checked else ()),
+                                                       *(() if args.no_null else ("null_not_violated",)),
                                                        "buggy_falsified", "fixed_held")},
                      "fixed_verdicts": {v: sum(r["fixed"]["verdict"] == v for r in rows) for v in sorted({r["fixed"]["verdict"] for r in rows})},
                      "finished": datetime.datetime.now().isoformat()})

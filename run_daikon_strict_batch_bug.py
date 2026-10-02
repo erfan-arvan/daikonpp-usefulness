@@ -34,8 +34,11 @@ Status: <results-root>/status/<P>_<B>.json, state in
 six: (1) the buggy suite without the triggering tests (traceA -> invA),
 (2) the triggering tests only on the buggy version (traceTrig): candidates
 they falsify, (3) the fixed version's full suite: those candidates must hold
-there. Stages: checker (--trigger-only), fixed (--no-null); no null trace, no
-strict stage. A bug is detected iff >= 1 candidate is validated in stage 3.
+there. Stages: checker (--trigger-only --no-baseline), fixed (--no-null
+--narrow-trace: the full suite is run, but traced only in the classes of the
+candidates step 2 falsified; nothing falsified -> no fixed run at all); no
+null trace, no traceA baseline check, no strict stage. A bug is detected iff
+>= 1 candidate is validated in stage 3.
 --seed-root: a 6-step work root whose finished traceA / invA of the same bug
 are hard-linked (copied if linking fails) into this run instead of re-traced.
 
@@ -223,10 +226,10 @@ def main():
     ck, nt, fv, sv = work / "checker", work / "nulltrace", work / "fixed_validation", work / "strict"
     cmds = {
         "checker": [py, THIS / "run_daikon_checker_bug.py", args.project, args.bug_id, "--out-root", ck,
-                    *(["--trigger-only"] if args.three_step else [])],
+                    *(["--trigger-only", "--no-baseline"] if args.three_step else [])],
         "nulltrace": [py, THIS / "make_null_trace.py", args.project, args.bug_id, "--checker-root", ck, "--out-root", nt],
         "fixed": [py, THIS / "validate_daikon_fixed.py", args.project, args.bug_id, "--checker-root", ck, "--out-root", fv,
-                  *(["--no-null"] if args.three_step else ["--null-trace", nt / bug / "traceNull.dtrace.gz"])],
+                  *(["--no-null", "--narrow-trace"] if args.three_step else ["--null-trace", nt / bug / "traceNull.dtrace.gz"])],
         "strict": [py, THIS / "validate_daikon_strict.py", args.project, args.bug_id, "--checker-root", ck,
                    "--validation-root", fv, "--out-root", sv],
     }

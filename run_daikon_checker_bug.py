@@ -522,17 +522,22 @@ def check_one(daikon_jar, checker_classes: Path, inv: Path, invariants_a_text: s
 
 
 def run_checks(daikon_jar, out_dir: Path, inv_a: Path, invariants_a: Path, trace_a: Path, trace_b: Path,
-               logs: Path, info: dict, max_violations: int):
+               logs: Path, info: dict, max_violations: int, baseline: bool = True):
     """Checks invA against traceA itself (baseline -> out_dir/baseline_A)
     first, then against trace B (-> out_dir) with every candidate the
     baseline FALSIFIED classified as inconsistent_with_inference_trace;
     updates `info`, then writes run_info.json and, last, the completion
-    marker."""
+    marker. baseline=False skips the traceA check (3-step pipeline: the
+    fixed version's full suite, a superset of traceA's tests, rechecks every
+    candidate that matters)."""
     checker_classes = compile_checker(daikon_jar, out_dir / "checker-classes", logs / "javac_checker.log")
     text = invariants_a.read_text(errors="replace")
-    base = check_one(daikon_jar, checker_classes, inv_a, text, trace_a, out_dir / "baseline_A", logs, "_baseline_A",
-                     max_violations)
-    base_outcomes = base.pop("_outcomes")
+    if baseline:
+        base = check_one(daikon_jar, checker_classes, inv_a, text, trace_a, out_dir / "baseline_A", logs, "_baseline_A",
+                         max_violations)
+        base_outcomes = base.pop("_outcomes")
+    else:
+        base, base_outcomes = {"skipped": True, "candidates": None, "counts": {"FALSIFIED": 0}}, []
     base_fals = [{"ppt": o["ppt"], "invariant": o["invariant"], "falsified_by": o["falsified_by"],
                   "violations": o["violations"], "evaluations": o["evaluations"],
                   "violations_all_nan": o.get("violations_all_nan"), "daikon_class": o.get("daikon_class"),
@@ -562,6 +567,8 @@ def run_checks(daikon_jar, out_dir: Path, inv_a: Path, invariants_a: Path, trace
     for o in base_fals[:10]:
         print(f"      BASELINE VIOLATION {o['ppt']} :: {o['invariant']} ({o['falsified_by']}, {o['violations']})")
     for label, r in (("check", res), ("baseline", base)):
+        if "cross_check" not in r:
+            continue
         n = len(r["cross_check"]["stock_only_disagreements"]) + len(r["cross_check"]["wrapper_only_disagreements"])
         if n:
             print(f"[WARN] {label}: {n} stock-checker disagreement(s), marked UNCHECKABLE (see run_info.json)")
@@ -576,6 +583,8 @@ def main():
                     help="phase B reruns phase A's specs in a fresh JVM (null / noise run)")
     ap.add_argument("--trigger-only", action="store_true",
                     help="phase B runs only the triggering tests (traceTrig) instead of the full suite")
+    ap.add_argument("--no-baseline", action="store_true",
+                    help="skip checking invA against traceA (3-step pipeline)")
     ap.add_argument("--out-root", default=None,
                     help="default: $ROOT/outputs_daikon_checker (normal/ and null/ below it)")
     ap.add_argument("--pkg-pattern", default=None)
@@ -700,7 +709,9 @@ def main():
             verify_same_inventory(ran_a, ran_b, info["verify_b"].setdefault("null_inventory", {}))
 
         # ---- Check invA (frozen) against trace B, and against traceA (baseline)
-        run_checks(daikon_jar, out_dir, inv_a, invariants_a, trace_a, trace_b, logs, info, args.max_violations)
+        info["baseline_checked"] = not args.no_baseline
+        run_checks(daikon_jar, out_dir, inv_a, invariants_a, trace_a, trace_b, logs, info, args.max_violations,
+                   baseline=not args.no_baseline)
     except Exception as e:
         info["error"] = f"{type(e).__name__}: {e}"
         write_atomic(out_dir / "run_info.json", json.dumps(info, indent=1))
