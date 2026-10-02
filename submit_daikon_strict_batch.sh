@@ -40,7 +40,18 @@ export DAIKON_JAR="${DAIKON_JAR:-$ROOT/tools/patched/daikon.jar}"
 echo "DAIKON_JAR: $DAIKON_JAR"
 command -v defects4j >/dev/null || { echo "ERROR: defects4j not on PATH"; exit 1; }
 
-WORK_ROOT="${WORK_ROOT:-/scratch/mjk76/$USER/usefullness/daikon_strict_batch}"
+# DAIKON_PIPELINE=3step (sbatch --export): the paper's 3-step procedure
+# (run_daikon_strict_batch_bug.py --three-step) in its own roots; a finished
+# traceA/invA of the same bug in the 6-step work root is reused, not re-traced.
+SIX_STEP_WORK_ROOT="/scratch/mjk76/$USER/usefullness/daikon_strict_batch"
+PIPELINE_ARGS=()
+if [[ "${DAIKON_PIPELINE:-}" == "3step" ]]; then
+  WORK_ROOT="${WORK_ROOT:-/scratch/mjk76/$USER/usefullness/daikon_3step}"
+  RESULTS_ROOT="${RESULTS_ROOT:-$ROOT/outputs_daikon_3step}"
+  PIPELINE_ARGS=(--three-step --seed-root "$SIX_STEP_WORK_ROOT")
+  echo ">>> DAIKON_PIPELINE=3step"
+fi
+WORK_ROOT="${WORK_ROOT:-$SIX_STEP_WORK_ROOT}"
 RESULTS_ROOT="${RESULTS_ROOT:-$ROOT/outputs_daikon_strict_batch}"
 export DAIKON_WORK_ROOT="${DAIKON_WORK_ROOT:-/scratch/mjk76/$USER/usefullness/defects4j}"
 mkdir -p "$WORK_ROOT" "$RESULTS_ROOT" "$DAIKON_WORK_ROOT"
@@ -60,7 +71,7 @@ set +e
 CLEANUP=--cleanup-traces
 if [[ "${DAIKON_KEEP_WORK:-}" =~ ^(1|true|yes)$ ]]; then CLEANUP=; echo ">>> DAIKON_KEEP_WORK set: keeping checkouts and traces"; fi
 python3 "$ROOT/run_daikon_strict_batch_bug.py" "$PROJECT" "$BUG_ID" --work-root "$WORK_ROOT" \
-  --results-root "$RESULTS_ROOT" $CLEANUP
+  --results-root "$RESULTS_ROOT" $CLEANUP ${PIPELINE_ARGS[@]+"${PIPELINE_ARGS[@]}"}
 rc=$?
 set -e
 if [[ $rc -eq 75 ]]; then

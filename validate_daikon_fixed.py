@@ -149,6 +149,8 @@ def main():
     ap.add_argument("--null-trace", default=None,
                     help="use this null trace (from make_null_trace.py; its directory must hold "
                          "NULL_TRACE_COMPLETE) instead of the checker's null/<P>_<B>/traceNull.dtrace.gz")
+    ap.add_argument("--no-null", action="store_true",
+                    help="3-step pipeline: no null trace and no null check")
     args = ap.parse_args()
 
     jar = os.environ.get("DAIKON_JAR")
@@ -171,13 +173,17 @@ def main():
 
     # ---- saved inputs (read only)
     inv_a, invariants_a = nd / "invA.inv.gz", nd / "invariantsA.txt"
-    trace_a, trace_full, trace_null = nd / "traceA.dtrace.gz", nd / "traceFull.dtrace.gz", ud / "traceNull.dtrace.gz"
+    ninfo0 = json.loads((nd / "run_info.json").read_text()) if (nd / "run_info.json").is_file() else {}
+    # The buggy phase-B trace: the full suite, or (3-step) the triggering tests only.
+    trace_a, trace_full, trace_null = nd / "traceA.dtrace.gz", nd / ninfo0.get("trace_b", "traceFull.dtrace.gz"), ud / "traceNull.dtrace.gz"
     null_done = ud / rc.COMPLETE
     if args.null_trace:
         trace_null = Path(args.null_trace).resolve()
         null_done = trace_null.parent / "NULL_TRACE_COMPLETE"
-    need = [nd / rc.COMPLETE, null_done, inv_a, invariants_a, trace_a, trace_full, trace_null,
+    need = [nd / rc.COMPLETE, inv_a, invariants_a, trace_a, trace_full,
             nd / "daikon_checker_outcomes.jsonl", nd / "baseline_A" / "daikon_checker_outcomes.jsonl", nd / "run_info.json"]
+    if not args.no_null:
+        need += [null_done, trace_null]
     missing = [str(p) for p in need if not p.is_file()]
     if missing:
         raise rc.InfraError(f"saved checker results missing (run/recheck the checker first): {missing}")
@@ -192,7 +198,8 @@ def main():
     hits = sorted(k for k, o in normal.items() if o["verdict"] == "FALSIFIED")
     triggering = [tuple(t.split("::", 1)) for t in ninfo["triggering"]]
     info = {"project": args.project, "bug_id": args.bug_id, "daikon_jar": jar, "checker_normal_dir": str(nd),
-            "checker_null_dir": str(ud), "null_trace": str(trace_null), "triggering": ninfo["triggering"], "buggy_falsified": len(hits),
+            "checker_null_dir": None if args.no_null else str(ud), "null_trace": None if args.no_null else str(trace_null),
+            "null_check": not args.no_null, "buggy_phase_b": ninfo.get("phase_b", "full"), "triggering": ninfo["triggering"], "buggy_falsified": len(hits),
             "started": datetime.datetime.now().isoformat()}
 
     d4j = d4j_env()
@@ -224,7 +231,8 @@ def main():
         cp_test = capture(["defects4j", "export", "-p", "cp.test"], cwd=work, env=d4j).strip()
         rc.ensure_test_classes(work, bin_tests, logs / "defects4j.log", d4j)
         classes = list_test_classes(str(bin_tests))
-        specs = ninfo["specs_b"]
+        # The fixed version always runs the full suite (paper step 3).
+        specs = ninfo.get("full_suite") or ninfo["specs_b"]
         absent = sorted({s.split("::")[0] for s in specs} - set(classes))
         if absent:
             raise rc.InfraError(f"test classes of the buggy full suite missing on the fixed version: {absent}")
@@ -267,9 +275,10 @@ def main():
         cc = rc.compile_checker(jar, out / "checker-classes", logs / "javac_checker.log")
         text = invariants_a.read_text(errors="replace")
         results, errors = {}, {}
-        for label, tr, dest in (("null", trace_null, out / "null_check"),
-                                ("fixed", mapped["Fixed"], out / "fixed_check"),
-                                ("fixed_trigger", mapped["FixedTrigger"], out / "fixed_trigger_check")):
+        targets = ([] if args.no_null else [("null", trace_null, out / "null_check")]) + [
+            ("fixed", mapped["Fixed"], out / "fixed_check"),
+            ("fixed_trigger", mapped["FixedTrigger"], out / "fixed_trigger_check")]
+        for label, tr, dest in targets:
             res, err = run_check(label, lambda tr=tr, dest=dest, label=label: rc.check_one(
                 jar, cc, inv_a, text, tr, dest, logs, f"_{label}", args.max_violations, baseline_bad))
             if res is not None:
@@ -295,7 +304,7 @@ def main():
             ppt, inv = k
             b = normal[k]
             base = baseline.get(k, {})
-            nul = results["null"].get(k, {})
+            nul = {} if args.no_null else results["null"].get(k, {})
             st, forced, why = ppt_status(tm, ppt)
             fx = results.get("fixed", {}).get(k)
             if "fixed" in errors:
@@ -309,7 +318,7 @@ def main():
             tg = results.get("fixed_trigger", {}).get(k, {}) if not forced else {}
             checks = {
                 "baseline_held": base.get("verdict") == "HELD" and base.get("evaluations", 0) > 0,
-                "null_not_violated": bool(nul) and nul.get("violations", 1) == 0,
+                **({} if args.no_null else {"null_not_violated": bool(nul) and nul.get("violations", 1) == 0}),
                 "buggy_falsified": b["verdict"] == "FALSIFIED",
                 "fixed_held": fixed_verdict == "HELD" and (fx or {}).get("evaluations", 0) > 0,
             }
@@ -342,7 +351,8 @@ def main():
         n_val = sum(r["validated"] for r in rows)
         info.update({"validated_hits": n_val, "validated_trigger_reached": sum(r["validated"] and r["trigger_reached_on_fixed"] for r in rows),
                      "failed_check_counts": {c: sum(c in r["failed_checks"] for r in rows)
-                                             for c in ("baseline_held", "null_not_violated", "buggy_falsified", "fixed_held")},
+                                             for c in ("baseline_held", *(() if args.no_null else ("null_not_violated",)),
+                                                       "buggy_falsified", "fixed_held")},
                      "fixed_verdicts": {v: sum(r["fixed"]["verdict"] == v for r in rows) for v in sorted({r["fixed"]["verdict"] for r in rows})},
                      "finished": datetime.datetime.now().isoformat()})
         rc.write_atomic(out / "run_info.json", json.dumps(info, indent=1))

@@ -574,6 +574,8 @@ def main():
     ap.add_argument("bug_id")
     ap.add_argument("--null", action="store_true",
                     help="phase B reruns phase A's specs in a fresh JVM (null / noise run)")
+    ap.add_argument("--trigger-only", action="store_true",
+                    help="phase B runs only the triggering tests (traceTrig) instead of the full suite")
     ap.add_argument("--out-root", default=None,
                     help="default: $ROOT/outputs_daikon_checker (normal/ and null/ below it)")
     ap.add_argument("--pkg-pattern", default=None)
@@ -581,6 +583,8 @@ def main():
                     help="violating samples kept per invariant")
     ap.add_argument("--force", action="store_true", help="rerun even if CHECKER_COMPLETE exists")
     args = ap.parse_args()
+    if args.null and args.trigger_only:
+        sys.exit("ERROR: --null and --trigger-only are exclusive")
 
     daikon_jar = os.environ.get("DAIKON_JAR")
     if not daikon_jar or not Path(daikon_jar).is_file():
@@ -601,7 +605,8 @@ def main():
     marker.unlink(missing_ok=True)
 
     trace_a = out_dir / "traceA.dtrace.gz"
-    trace_b = out_dir / ("traceFull.dtrace.gz" if mode == "normal" else "traceNull.dtrace.gz")
+    trace_b = out_dir / ("traceNull.dtrace.gz" if mode == "null" else
+                         "traceTrig.dtrace.gz" if args.trigger_only else "traceFull.dtrace.gz")
     inv_a = out_dir / "invA.inv.gz"
     inv_a_marker = inv_a.with_name(inv_a.name + ".info")
     invariants_a = out_dir / "invariantsA.txt"
@@ -646,9 +651,12 @@ def main():
             raise InfraError(f"triggering test class(es) not among compiled test classes: {missing_cls}")
         specs_a = [f"{c}::" + ",".join(f"!{m}" for m in trig_by_class[c]) if c in trig_by_class else c
                    for c in all_classes]
-        specs_b = list(specs_a) if mode == "null" else list(all_classes)
+        specs_b = (list(specs_a) if mode == "null" else
+                   [f"{c}::{m}" for c, m in triggering] if args.trigger_only else list(all_classes))
         info.update({"pkg_pattern": pkg_pattern, "triggering": [f"{c}::{m}" for c, m in triggering],
-                     "specs_a": specs_a, "specs_b": specs_b})
+                     "specs_a": specs_a, "specs_b": specs_b, "full_suite": list(all_classes),
+                     "phase_b": "trigger" if args.trigger_only else "full" if mode == "normal" else "null",
+                     "trace_b": trace_b.name})
         print(f"[INFO] mode={mode} pkg_pattern={pkg_pattern} triggering={info['triggering']}")
 
         cp_runner = f"{cp_test}:{find_junit4_jar()}"
@@ -683,7 +691,8 @@ def main():
         if ran_b is not None:
             print(f"[INFO] reusing finished {trace_b}")
         else:
-            print(f">>> Chicory phase B ({'full suite' if mode == 'normal' else 'null: phase A specs again'})")
+            print(f">>> Chicory phase B ({info['phase_b']}: "
+                  f"{'triggering tests only' if args.trigger_only else 'full suite' if mode == 'normal' else 'phase A specs again'})")
             ran_b = run_chicory(daikon_jar, runner_classes, cp_runner, pkg_pattern, omit_pattern,
                                 trace_b, work_dir, specs_b, logs / "chicory_B.log")
         info["verify_b"] = verify_tests(f"phase B ({mode})", ran_b, triggering, expect_present=(mode == "normal"))
